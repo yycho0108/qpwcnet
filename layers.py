@@ -168,7 +168,7 @@ class FeaturesLayer(tf.keras.layers.Layer):
         self.convs = []
         for f in [32, 64, 96, 128, 192]:
             conv = tf.keras.layers.Conv2D(filters=f, kernel_size=3,
-                                          strides=2, activation=tf.keras.activations.relu, padding='same')
+                                          strides=2, activation=tf.keras.activations.swish, padding='same')
             self.convs.append(conv)
         super().__init__(*args, **kwargs)
 

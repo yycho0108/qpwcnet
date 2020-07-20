@@ -30,7 +30,8 @@ def get_pixel_value(img, x, y):
 
 
 def tf_warp(img, flow):
-    W, H = tf.cast(tf.shape(img)[2], tf.float32), tf.cast(tf.shape(img)[1], tf.float32)
+    W, H = tf.cast(tf.shape(img)[2], tf.float32), tf.cast(
+        tf.shape(img)[1], tf.float32)
     x, y = tf.meshgrid(tf.range(W), tf.range(H))
     x = tf.expand_dims(x, 0)
     x = tf.expand_dims(x, -1)
@@ -94,3 +95,63 @@ def tf_warp(img, flow):
     out = tf.add_n([wa * Ia, wb * Ib, wc * Ic, wd * Id])
 
     return out
+
+
+@tf.function
+def dense_image_warp(
+    image: types.TensorLike, flow: types.TensorLike, name: Optional[str] = None
+) -> tf.Tensor:
+    """Image warping using per-pixel flow vectors.
+    Apply a non-linear warp to the image, where the warp is specified by a
+    dense flow field of offset vectors that define the correspondences of
+    pixel values in the output image back to locations in the source image.
+    Specifically, the pixel value at output[b, j, i, c] is
+    images[b, j - flow[b, j, i, 0], i - flow[b, j, i, 1], c].
+    The locations specified by this formula do not necessarily map to an int
+    index. Therefore, the pixel value is obtained by bilinear
+    interpolation of the 4 nearest pixels around
+    (b, j - flow[b, j, i, 0], i - flow[b, j, i, 1]). For locations outside
+    of the image, we use the nearest pixel values at the image boundary.
+    PLEASE NOTE: The definition of the flow field above is different from that
+    of optical flow. This function expects the negative forward flow from
+    output image to source image. Given two images `I_1` and `I_2` and the
+    optical flow `F_12` from `I_1` to `I_2`, the image `I_1` can be
+    reconstructed by `I_1_rec = dense_image_warp(I_2, -F_12)`.
+    Args:
+      image: 4-D float `Tensor` with shape `[batch, height, width, channels]`.
+      flow: A 4-D float `Tensor` with shape `[batch, height, width, 2]`.
+      name: A name for the operation (optional).
+      Note that image and flow can be of type tf.half, tf.float32, or
+      tf.float64, and do not necessarily have to be the same type.
+    Returns:
+      A 4-D float `Tensor` with shape`[batch, height, width, channels]`
+        and same type as input image.
+    Raises:
+      ValueError: if height < 2 or width < 2 or the inputs have the wrong
+        number of dimensions.
+    """
+    with tf.name_scope(name or "dense_image_warp"):
+        image = tf.convert_to_tensor(image)
+        flow = tf.convert_to_tensor(flow)
+        batch_size, height, width, channels = (
+            tf.shape(image)[0],
+            tf.shape(image)[1],
+            tf.shape(image)[2],
+            tf.shape(image)[3],
+        )
+
+        # The flow is defined on the image grid. Turn the flow into a list of query
+        # points in the grid space.
+        grid_x, grid_y = tf.meshgrid(tf.range(width), tf.range(height))
+        stacked_grid = tf.cast(tf.stack([grid_y, grid_x], axis=2), flow.dtype)
+        batched_grid = tf.expand_dims(stacked_grid, axis=0)
+        query_points_on_grid = batched_grid + flow
+        query_points_flattened = tf.reshape(
+            query_points_on_grid, [batch_size, height * width, 2]
+        )
+        # Compute values at the query points, then reshape the result back to the
+        # image grid.
+        interpolated = interpolate_bilinear(image, query_points_flattened)
+        interpolated = tf.reshape(
+            interpolated, [batch_size, height, width, channels])
+        return interpolated
