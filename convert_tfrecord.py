@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-from flo_format import read_flo
-from tfrecord import write_record, get_writer
+from lib.flo_format import read_flo
+from lib.tfrecord import write_record, get_writer
 
 
 def main():

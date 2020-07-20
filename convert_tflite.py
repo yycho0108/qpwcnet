@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 
-from pwcnet import build_network
+import numpy as np
+import tensorflow as tf
+import tensorflow_model_optimization as tfmot
+
+from lib.pwcnet import build_network
+from lib.pwcnet import Flow, UpFlow, Upsample, Split
+from lib.quantize import DelegateConvConfig
+from tensorflow_model_optimization.python.core.quantization.keras.default_8bit import default_8bit_quantize_registry
 
 q_cfg_map = {}
 q_cfg_map[Flow] = DelegateConvConfig(['flow'])
@@ -16,7 +23,6 @@ lrelu_cfg = default_8bit_quantize_registry.Default8BitActivationQuantizeConfig()
 
 def quantize_annotate_layer(layer):
     L = tf.keras.layers
-    # (FeaturesLayer, Flow, UpFlow, Upsample)
     if isinstance(layer, tuple(list(q_cfg_map.keys()))):
         return tfmot.quantization.keras.quantize_annotate_layer(layer, q_cfg_map[layer.__class__])
     elif isinstance(layer, tf.keras.layers.Conv2D):
@@ -32,7 +38,6 @@ def quantize_annotate_layer(layer):
 
 def quantize_model(model):
     with tfmot.quantization.keras.quantize_scope({
-        'FeaturesLayer': FeaturesLayer,
         'Flow': Flow,
         'UpFlow': UpFlow,
         'Upsample': Upsample,
@@ -72,7 +77,7 @@ def main():
 
     tf.keras.utils.plot_model(
         net,
-        to_file="net.png",
+        to_file="img/net.png",
         show_layer_names=True,
         rankdir="TB",
         expand_nested=False,

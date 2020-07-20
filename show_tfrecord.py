@@ -3,8 +3,9 @@
 import cv2
 import numpy as np
 import tensorflow as tf
-from tfrecord import get_reader
 import tensorflow_addons as tfa
+
+from lib.tfrecord import get_reader
 
 
 def normalize(x):
@@ -23,7 +24,7 @@ def main():
         # show prev reconstructed from nxt.
         nxt_w = tfa.image.dense_image_warp(nxt[None, ...].astype(
             np.float32)/255.0, -flo[None, ..., ::-1]).numpy()
-        #nxt_w = tfa.image.dense_image_warp(nxt[None, ...].astype(
+        # nxt_w = tfa.image.dense_image_warp(nxt[None, ...].astype(
         #    np.float32)/255.0, -flo[None, ..., ::-1]).numpy()
 
         cv2.imshow('prv', prv)
