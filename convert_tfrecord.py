@@ -13,8 +13,9 @@ def main():
     sintel_root = Path('/media/ssd/datasets/MPI-Sintel-complete/')
     img_root = sintel_root / 'training/final/'
     flo_root = sintel_root / 'training/flow/'
+    out_path = '/tmp/sintel.tfrecord'
 
-    with get_writer() as w:
+    with get_writer(out_path) as w:
         flos = list(flo_root.glob('*/*.flo'))
         for flo in tqdm(flos):
             # metadata

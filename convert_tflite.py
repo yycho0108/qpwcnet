@@ -12,7 +12,7 @@ from tensorflow_model_optimization.python.core.quantization.keras.default_8bit i
 q_cfg_map = {}
 q_cfg_map[Flow] = DelegateConvConfig(['flow'])
 q_cfg_map[UpFlow] = DelegateConvConfig(['flow'])
-q_cfg_map[Upsample] = DelegateConvConfig(['conv'])
+# q_cfg_map[Upsample] = DelegateConvConfig(['conv'])
 lrelu_cfg = default_8bit_quantize_registry.Default8BitActivationQuantizeConfig()
 #print('?', q_cfg_map)
 #q_cfg_map[tf.keras.activations.swish]: default_8bit_quantize_registry.Default8BitActivationQuantizeConfig()

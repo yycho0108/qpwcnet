@@ -6,6 +6,7 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 
 from lib.tfrecord import get_reader
+from lib.warp import tf_warp
 
 
 def normalize(x):
@@ -15,17 +16,19 @@ def normalize(x):
 
 
 def main():
-    filename = '/tmp/sintel.tfrecord'
+    filename = '/media/ssd/datasets/sintel-processed/sintel.tfrecord'
     reader = get_reader(filename)
     reader.shuffle(buffer_size=32)
     for entry in reader.as_numpy_iterator():
         prv, nxt, flo = entry
 
         # show prev reconstructed from nxt.
-        nxt_w = tfa.image.dense_image_warp(nxt[None, ...].astype(
-            np.float32)/255.0, -flo[None, ..., ::-1]).numpy()
         # nxt_w = tfa.image.dense_image_warp(nxt[None, ...].astype(
         #    np.float32)/255.0, -flo[None, ..., ::-1]).numpy()
+        # nxt_w = tf_warp(nxt[None, ...].astype(
+        #    np.float32)/255.0, flo[None, ...]).numpy()
+        nxt_w = tfa.image.dense_image_warp(nxt[None, ...].astype(
+            np.float32)/255.0, -flo[None, ..., ::-1]).numpy()
 
         cv2.imshow('prv', prv)
         cv2.imshow('nxt', nxt)
