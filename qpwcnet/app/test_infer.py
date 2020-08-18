@@ -13,7 +13,7 @@ def normalize(x):
 
 
 def main():
-    model_file = '/tmp/pwc.076.hdf5'
+    model_file = './weights/pwc.076.hdf5'
     net = build_network(train=False)
     net.load_weights(model_file)
 
@@ -32,6 +32,7 @@ def main():
 
     cv2.imshow('lhs', lhs)
     cv2.imshow('rhs', rhs)
+    cv2.imshow('overlay', rhs//2 + lhs//2)
     cv2.imshow('flow-x', normalize(y[0, ..., 0]))
     cv2.imshow('flow-y', normalize(y[0, ..., 1]))
     cv2.imshow('rhs-w', rhs_w)
