@@ -258,6 +258,7 @@ class Flow(tf.keras.layers.Layer):
 class UpFlow(tf.keras.layers.Layer):
     """
     Second optical flow estimation block.
+    Refine/upsample the input optical flow.
     """
 
     def __init__(self, *args, **kwargs):
@@ -295,10 +296,10 @@ class DownConv(tf.keras.layers.Layer):
         self._config = {
             'num_filters': num_filters,
         }
-        self.conv = tf.keras.layers.SeparableConv2D(filters=num_filters, kernel_size=3,
-                                                    strides=2, activation='Mish', padding='same')
-        # self.conv = tf.keras.layers.Conv2D(filters=num_filters, kernel_size=3,
-        #                                   strides=2, activation='Mish', padding='same')
+        # self.conv = tf.keras.layers.SeparableConv2D(filters=num_filters, kernel_size=3,
+        #                                            strides=2, activation='Mish', padding='same')
+        self.conv = tf.keras.layers.Conv2D(filters=num_filters, kernel_size=3,
+                                           strides=2, activation='Mish', padding='same')
         self.norm = tfa.layers.GroupNormalization(groups=4, axis=3)
         super().__init__(*args, **kwargs)
 

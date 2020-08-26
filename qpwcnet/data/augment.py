@@ -105,7 +105,7 @@ def image_crop(ims, flo, crop_shape):
 def image_augment(ims, flo, out_shape):
     ims, flo = image_flip_ud(ims, flo)
     ims, flo = image_flip_lr(ims, flo)
-    # ims, flo = image_scale_and_crop(ims, flo, out_shape)
+    ims, flo = image_scale_and_crop(ims, flo, out_shape)
     ims, flo = image_resize(ims, flo, out_shape)
     ims = image_augment_colors(ims)
     return ims, flo

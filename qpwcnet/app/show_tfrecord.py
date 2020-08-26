@@ -31,8 +31,8 @@ def main():
         ims, flo = entry
         prv = ims[..., :3]
         nxt = ims[..., 3:]
-        print(prv.max())
-        print(nxt.max())
+        print(prv.min(), prv.max())
+        print(nxt.min(), nxt.max())
 
         # show prev reconstructed from nxt.
         # nxt_w = tfa.image.dense_image_warp(nxt[None, ...].astype(
