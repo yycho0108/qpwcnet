@@ -6,6 +6,7 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 
 from qpwcnet.data.tfrecord import get_reader
+from qpwcnet.data.fchairs3d import get_dataset, decode_files
 from qpwcnet.data.augment import image_augment, image_resize
 from qpwcnet.core.warp import tf_warp
 
@@ -19,13 +20,22 @@ def normalize(x):
 def preprocess(ims, flo):
     # 0-255 -> 0.0-1.0
     ims = tf.cast(ims, tf.float32) * tf.constant(1.0/255.0, dtype=tf.float32)
-    return image_resize(ims, flo, (256, 512))
-    # return image_augment(ims, flo, (256, 512))
+    # return image_resize(ims, flo, (256, 512))
+    return image_augment(ims, flo, (256, 512))
 
 
 def main():
-    filename = '/media/ssd/datasets/sintel-processed/sintel.tfrecord'
-    reader = get_reader(filename).map(preprocess)
+
+    if False:
+        filename = '/media/ssd/datasets/sintel-processed/sintel.tfrecord'
+        reader = get_reader(filename).map(preprocess)
+    else:
+        reader = get_dataset().shuffle(buffer_size=1024).batch(
+            8).map(decode_files).map(preprocess)
+        # reader = get_dataset().interleave(lambda x: Dataset.from_tensors(x).map(decode_files),
+        #                                  cycle_length=tf.data.experimental.AUTOTUNE,
+        #                                  num_parallel_calls=tf.data.experimental.AUTOTUNE).map(preprocess)
+
     reader.shuffle(buffer_size=32)
     for entry in reader.as_numpy_iterator():
         ims, flo = entry
@@ -39,11 +49,11 @@ def main():
         #    np.float32)/255.0, -flo[None, ..., ::-1]).numpy()
         # nxt_w = tf_warp(nxt[None, ...].astype(
         #    np.float32)/255.0, flo[None, ...]).numpy()
-        
+
         # flo order : (x,y) == (1,0)
-        # nxt_w = tfa.image.dense_image_warp(nxt[None, ...].astype(
-        #     np.float32), -flo[None, ..., ::-1]).numpy()
-        nxt_w = tf_warp(nxt[None,...], flo)[0].numpy()
+        nxt_w = tfa.image.dense_image_warp(
+            nxt[None, ...], -flo[None, ..., ::-1])[0].numpy()
+        # nxt_w = tf_warp(nxt[None, ...], flo)[0].numpy()
         print(nxt_w.shape)
 
         cv2.imshow('prv', prv)

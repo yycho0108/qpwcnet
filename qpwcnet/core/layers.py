@@ -3,7 +3,7 @@
 import tensorflow as tf
 import tensorflow_addons as tfa
 
-from qpwcnet.core.warp import dense_image_warp, get_pixel_value
+from qpwcnet.core.warp import get_pixel_value
 from qpwcnet.core.mish import Mish
 
 
@@ -17,30 +17,6 @@ def cost_volume(prv, nxt, search_scale=1, data_format='channels_last'):
     return lrelu(corr)
 
 
-def cost_volume_v2(prv, nxt, search_range=4, name='cost_volume'):
-    """Build cost volume for associating a pixel from Image1 with its corresponding pixels in Image2.
-    Args:
-        prv: Level of the feature pyramid of Image1
-        nxt: Warped level of the feature pyramid of image22
-        search_range: Search range (maximum displacement)
-    """
-    padded_lvl = tf.pad(nxt, [[0, 0], [search_range, search_range], [
-                        search_range, search_range], [0, 0]])
-    _, h, w, _ = tf.unstack(tf.shape(prv))
-    max_offset = search_range * 2 + 1
-
-    cost_vol = []
-    for y in range(0, max_offset):
-        for x in range(0, max_offset):
-            slice = tf.slice(padded_lvl, [0, y, x, 0], [-1, h, w, -1])
-            cost = tf.reduce_mean(prv * slice, axis=3, keepdims=True)
-            cost_vol.append(cost)
-    cost_vol = tf.concat(cost_vol, axis=3)
-    # I simply cannot think of a reason for this to exist.
-    # cost_vol = tf.nn.leaky_relu(cost_vol, alpha=0.1, name=name)
-    return cost_vol
-
-
 class CostVolume(tf.keras.layers.Layer):
     def __init__(self, search_range=4, *args, **kwargs):
         self._config = {
@@ -52,13 +28,15 @@ class CostVolume(tf.keras.layers.Layer):
 
         super().__init__(*args, **kwargs)
 
-    # def build(self, input_shapes):
+    def build(self, input_shapes):
+        self.shape = input_shapes
+        super().build(input_shapes)
 
     def call(self, prv, nxt):
         r = self.search_range
         d = r * 2 + 1
         pad_nxt = self.pad(nxt)
-        _, h, w, _ = tf.unstack(tf.shape(prv))
+        _, h, w, _ = self.shape
 
         cost_vol = []
         for i0 in range(0, d):
@@ -87,12 +65,17 @@ class Warp(tf.keras.layers.Layer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+    def build(self, input_shapes):
+        self.shape = input_shapes[0]
+        super().build(input_shapes)
+
     def call(self, inputs):
         img, flo = inputs
 
         # Create a 2D sampling grid.
-        W, H = tf.cast(tf.shape(img)[2], tf.float32), tf.cast(
-            tf.shape(img)[1], tf.float32)
+        _, H, W, _ = self.shape
+        H = tf.cast(H, tf.float32)
+        W = tf.cast(W, tf.float32)
         x, y = tf.meshgrid(tf.range(W), tf.range(H))
 
         # 2D grid + batch + depth dims
@@ -185,6 +168,15 @@ class Split(tf.keras.layers.Layer):
 
 
 class Upsample(tf.keras.layers.Layer):
+    def __init__(self, *args, **kwargs):
+        self.upsample = tf.keras.layers.UpSampling2D(interpolation='bilinear')
+        super().__init__(*args, **kwargs)
+
+    def call(self, x):
+        return tf.constant(2.0, dtype=tf.float32) * self.upsample(x)
+
+
+class UpConv(tf.keras.layers.Layer):
     def __init__(self, filters, *args, **kwargs):
         self._config = {
             'filters': filters,
@@ -194,8 +186,14 @@ class Upsample(tf.keras.layers.Layer):
                                                     strides=2,
                                                     padding='same',
                                                     activation=None,
+                                                    kernel_regularizer=tf.keras.regularizers.l2(
+                                                        0.0004)
                                                     )
+        self.shape = None
         super().__init__(*args, **kwargs)
+
+    def build(self, input_shape):
+        self.shape = input_shape
 
     def call(self, x):
         return tf.constant(2, dtype=tf.float32) * self.conv(x)
@@ -221,7 +219,10 @@ class OptFlow(tf.keras.layers.Layer):
             use_bias = False if is_flow else True
             conv = tf.keras.layers.SeparableConv2D(
                 filters=f, kernel_size=3, strides=1, padding='same', activation=activation,
-                use_bias=use_bias)
+                use_bias=use_bias,
+                depthwise_regularizer=tf.keras.regularizers.l2(0.0004),
+                pointwise_regularizer=tf.keras.regularizers.l2(0.0004)
+            )
             # conv = tf.keras.layers.Conv2D(
             #    filters=f, kernel_size=3, strides=1, padding='same', activation=activation)
             self.flow.append(conv)
@@ -274,11 +275,13 @@ class UpFlow(tf.keras.layers.Layer):
 
         # nxt_w = warp(nxt, flo)
 
-        # NOTE(yycho0108): [::-1] is required due to mismatch in convention.
         # sintel = (x,y) == (j,i) == (minor,major)
         # image_warp = (y,x) == (i,j) == (major,minor)
         # nxt_w = tfa.image.dense_image_warp(nxt, -flo[...,::-1])
         # nxt_w = dense_image_warp(nxt, flo[..., ::-1])
+
+        # NOTE(yycho0108):
+        # I think ... that the 20x factor here is required for correct feature warping.
         nxt_w = self.warp((nxt, flo))
 
         feat.append(flo)
@@ -299,7 +302,10 @@ class DownConv(tf.keras.layers.Layer):
         # self.conv = tf.keras.layers.SeparableConv2D(filters=num_filters, kernel_size=3,
         #                                            strides=2, activation='Mish', padding='same')
         self.conv = tf.keras.layers.Conv2D(filters=num_filters, kernel_size=3,
-                                           strides=2, activation='Mish', padding='same')
+                                           strides=2, activation='Mish', padding='same',
+                                           kernel_regularizer=tf.keras.regularizers.l2(
+                                               0.0004)
+                                           )
         self.norm = tfa.layers.GroupNormalization(groups=4, axis=3)
         super().__init__(*args, **kwargs)
 

@@ -35,7 +35,7 @@ def disable_gpu():
 
 def main():
     log_dir = '/tmp/pwc/profile'
-    disable_gpu()
+    # disable_gpu()
 
     # No eager
     tf.compat.v1.disable_eager_execution()

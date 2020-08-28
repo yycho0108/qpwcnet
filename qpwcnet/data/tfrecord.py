@@ -76,7 +76,7 @@ def read_record(serialized_example):
 
     # shape = (example['height'], example['width'], 3)
     # ims = tf.concat([prv, nxt], axis=-1)
-    # tf.ensure_shape(ims, 
+    # tf.ensure_shape(ims,
     return tf.concat([prv, nxt], axis=-1), flo
 
 
