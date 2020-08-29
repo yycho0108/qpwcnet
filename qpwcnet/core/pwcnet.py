@@ -4,20 +4,28 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 import tensorflow_model_optimization as tfmot
 
-from qpwcnet.core.layers import Split, Upsample, UpConv, Flow, UpFlow, FeaturesLayer, lrelu, DownConv
+from qpwcnet.core.layers import Split, Upsample, UpConv, Flow, UpFlow, lrelu, DownConv
 # from mish import Mish, mish
 from qpwcnet.core.mish import Mish, mish
 
 
-def build_network(train=True) -> tf.keras.Model:
-    inputs = tf.keras.Input(shape=(256, 512, 6),
-                            dtype=tf.float32, name='inputs')
-    img_prv, img_nxt = Split(2, axis=-1)(inputs)
+def build_network(train=True, data_format='channels_first') -> tf.keras.Model:
+    if data_format == 'channels_first':
+        shape = (6, 256, 512)
+        axis = 1
+    elif data_format == 'channels_last':
+        shape = (256, 512, 6)
+        axis = 3
+    else:
+        raise ValueError('Unsupported data format : {}'.format(data_format))
+
+    inputs = tf.keras.Input(shape=shape, dtype=tf.float32, name='inputs')
+    img_prv, img_nxt = Split(2, axis=axis)(inputs)
 
     # Compute features.
     feat_layers = []
     for f in [32, 64, 96, 128, 192]:
-        feat_layers.append(DownConv(f))
+        feat_layers.append(DownConv(f, data_format))
 
     feats_prv = []
     feats_nxt = []
@@ -41,14 +49,12 @@ def build_network(train=True) -> tf.keras.Model:
             flo_u = Upsample()(flo)
 
             # Compute the refined flow.
-            args = [feat_prv, feat_nxt, flo_u]
-            flo = UpFlow()(args)
+            args = (feat_prv, feat_nxt, flo_u)
+            flo = UpFlow(data_format)(args)
         else:
-            args = [feat_prv, feat_nxt]
-            flo = Flow()(args)
-            # --> supervised @ FLO = GT_FLO * 1/20.0 * DIM/FULLDIM
-            # --> UPSCALE= FLO' = GT_FLO * 1/20.0 * DIM'/FULLDIM
-            #                   = FLO * DIM'/DIM = FLO * 2
+            # Compute the first flow layer.
+            args = (feat_prv, feat_nxt)
+            flo = Flow(data_format)(args)
         flos.append(flo)
 
     # Compute final full-res optical flow.

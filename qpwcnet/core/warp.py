@@ -17,17 +17,22 @@ def get_pixel_value(img, x, y):
     -------
     - output: tensor of shape (B, H, W, C)
     """
-    shape = tf.shape(x)
-    batch_size = shape[0]
-    height = shape[1]
-    width = shape[2]
+    indices = tf.stack([y, x], axis=-1)
+    out = tf.gather_nd(img, indices, batch_dims=1)
+    return out
+    #shape = tf.shape(x)
+    #batch_size = shape[0]
+    #height = shape[1]
+    #width = shape[2]
 
-    batch_idx = tf.range(0, batch_size)
-    batch_idx = tf.reshape(batch_idx, (batch_size, 1, 1))
-    b = tf.tile(batch_idx, (1, height, width))
-    indices = tf.stack([b, y, x], 3)
+    # batch_idx = tf.range(0, batch_size)[:, None, None, None]  # B111
+    # if axis == 1:
+    #    b = tf.tile(batch_idx, (1, 1, height, width))  # B1HW
+    # else:
+    #    b = tf.tile(batch_idx, (1, height, width, 1))  # BHW1
 
-    return tf.gather_nd(img, indices)
+    #indices = tf.stack([b, ALL, y, x], axis)
+    # return tf.gather_nd(img, indices)
 
 
 def tf_warp(img, flow):

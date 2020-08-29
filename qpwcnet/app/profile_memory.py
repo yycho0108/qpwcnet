@@ -34,17 +34,22 @@ def disable_gpu():
 
 
 def main():
+    data_format = 'channels_first'
     log_dir = '/tmp/pwc/profile'
     # disable_gpu()
 
     # No eager
     tf.compat.v1.disable_eager_execution()
-    model = build_network(train=True)
-    # model.compile(
-    #    optimizer='adam',
-    #    loss={t: FlowMseLoss() for t in model.outputs}
-    # )
-    # tf.keras.backend.clear_session
+    model = build_network(train=True, data_format=data_format)
+
+    # Add loss terms.
+    losses = []
+    for out in model.outputs:
+        losses.append(FlowMseLoss(data_format=data_format))
+    model.compile(
+        optimizer='adam',
+        loss=losses
+    )
 
     run_options = tf.compat.v1.RunOptions(
         trace_level=tf.compat.v1.RunOptions.FULL_TRACE)

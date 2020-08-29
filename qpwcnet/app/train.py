@@ -28,11 +28,16 @@ def learning_rate(batch_size):
 def preprocess_passthrough(ims, flo):
     # 0-255 -> 0.0-1.0
     ims = tf.cast(ims, tf.float32) * tf.constant(1.0/255.0, dtype=tf.float32)
+
     # resize, no augmentation.
     ims, flo = image_resize(ims, flo, (256, 512))
+
     # 0.0-1.0 -> -0.5, 0.5
     ims = ims - 0.5
 
+    # HWC -> CHW
+    ims = tf.transpose(ims, (2, 0, 1))
+    flo = tf.transpose(flo, (2, 0, 1))
     return ims, flo
 
 
@@ -43,6 +48,10 @@ def preprocess(ims, flo):
     ims, flo = image_augment(ims, flo, (256, 512))
     # 0.0-1.0 -> -0.5, 0.5
     ims = ims - 0.5
+
+    # HWC -> CHW
+    ims = tf.transpose(ims, (2, 0, 1))
+    flo = tf.transpose(flo, (2, 0, 1))
 
     return ims, flo
 
@@ -73,11 +82,15 @@ def train_step(model, losses, optim, ims, flo):
     return optim.iterations, flow_losses, loss
 
 
-def epe_error(flo_label, flo_outputs):
-    flo_pred = flo_outputs[-1]
-    flo_gt = flo_label
-    err = tf.norm(flo_pred - flo_gt, ord=2, axis=-1)
-    return tf.reduce_mean(err)
+def epe_error(data_format='channels_last'):
+    axis = -1 if (data_format == 'channels_last') else 1
+
+    def _epe_error(flo_label, flo_outputs):
+        flo_pred = flo_outputs[-1]
+        flo_gt = flo_label
+        err = tf.norm(flo_pred - flo_gt, ord=2, axis=axis)
+        return tf.reduce_mean(err)
+    return _epe_error
 
 
 def main():
@@ -85,6 +98,7 @@ def main():
     batch_size = 4
     num_epoch = 600
     update_freq = 128
+    data_format = 'channels_first'
 
     # Configure memory growth.
     gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -101,7 +115,6 @@ def main():
     filenames = tf.data.Dataset.list_files(glob_pattern).shuffle(32)
     # dataset = get_reader(filenames).shuffle(buffer_size=1024).repeat().batch(8)
     # dataset = get_reader(filenames).batch(8).repeat()
-
     # dataset = (get_reader(filenames)
     #           .shuffle(buffer_size=32)
     #           .map(preprocess)
@@ -109,23 +122,30 @@ def main():
     #           .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
 
     # sintel...
-    dataset = tf.data.Dataset.list_files(glob_pattern).interleave(
+    dataset = (tf.data.Dataset.list_files(glob_pattern).interleave(
         lambda x: tf.data.TFRecordDataset(x, compression_type='ZLIB'),
         cycle_length=tf.data.experimental.AUTOTUNE,
-        num_parallel_calls=tf.data.experimental.AUTOTUNE).shuffle(buffer_size=32).map(read_record).map(preprocess).batch(batch_size, drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-    # fchairs3d ...
-    dataset_fc3d = get_dataset().shuffle(buffer_size=1024).map(
-        decode_files).map(preprocess).batch(batch_size, drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-    # merge ...
-    dataset = dataset.concatenate(dataset_fc3d)
+        num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        .shuffle(buffer_size=32)
+        .map(read_record)
+        .map(preprocess)
+        .batch(batch_size, drop_remainder=True)
+        .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
+
+    if False:
+        # fchairs3d ...
+        dataset_fc3d = get_dataset().shuffle(buffer_size=1024).map(
+            decode_files).map(preprocess).batch(batch_size, drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+        # merge ...
+        dataset = dataset.concatenate(dataset_fc3d)
 
     # dataset = dataset.take(1).cache()
-    model = build_network(train=True)
+    model = build_network(train=True, data_format=data_format)
 
     # Create losses, flow mse
     losses = []
     for out in model.outputs[:-1]:
-        losses.append(FlowMseLoss())
+        losses.append(FlowMseLoss(data_format=data_format))
         # losses.append(FlowMseLossFineTune())
 
     # Setup directory structure.
@@ -211,10 +231,10 @@ def main():
                 learning_rate=learning_rate(batch_size)),
             loss=losses,
             # FIXME(yycho0108): This is super ugly, but probably works for now.
-            metrics={'upsample_4': epe_error}
+            metrics={'upsample_4': epe_error(data_format)}
         )
         #print('model losses')
-        #print(model.losses)
+        # print(model.losses)
         #print([t.name for t in model.losses])
         # return
         model.fit(dataset,

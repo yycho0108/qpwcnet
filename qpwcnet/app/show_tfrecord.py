@@ -30,8 +30,7 @@ def main():
         filename = '/media/ssd/datasets/sintel-processed/sintel.tfrecord'
         reader = get_reader(filename).map(preprocess)
     else:
-        reader = get_dataset().shuffle(buffer_size=1024).batch(
-            8).map(decode_files).map(preprocess)
+        reader = get_dataset().shuffle(buffer_size=1024).map(decode_files).map(preprocess)
         # reader = get_dataset().interleave(lambda x: Dataset.from_tensors(x).map(decode_files),
         #                                  cycle_length=tf.data.experimental.AUTOTUNE,
         #                                  num_parallel_calls=tf.data.experimental.AUTOTUNE).map(preprocess)
@@ -41,8 +40,10 @@ def main():
         ims, flo = entry
         prv = ims[..., :3]
         nxt = ims[..., 3:]
+
         print(prv.min(), prv.max())
         print(nxt.min(), nxt.max())
+        print(flo.min(), flo.max())
 
         # show prev reconstructed from nxt.
         # nxt_w = tfa.image.dense_image_warp(nxt[None, ...].astype(
@@ -60,10 +61,11 @@ def main():
         cv2.imshow('nxt', nxt)
         # cv2.imshow('msk', prv_has_flo.astype(np.float32))
         cv2.imshow('nxt_w', nxt_w)
+        cv2.imshow('nxt_w2', nxt_w-prv)
 
         # bgr, prv=b, nxt=g, r=warp
         overlay = np.stack([
-            (prv).mean(axis=-1), 0*(nxt).mean(axis=-1),
+            (prv).mean(axis=-1), (nxt).mean(axis=-1),
             (nxt_w).mean(axis=-1)], axis=-1)
         cv2.imshow('overlay', overlay)
         cv2.imshow('flo', normalize(flo[..., 0]))
