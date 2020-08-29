@@ -5,8 +5,9 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
 
+from qpwcnet.core.util import disable_gpu
 from qpwcnet.data.tfrecord import get_reader
-from qpwcnet.data.fchairs3d import get_dataset, decode_files
+from qpwcnet.data.fchairs3d import get_dataset_from_set
 from qpwcnet.data.augment import image_augment, image_resize
 from qpwcnet.core.warp import tf_warp
 
@@ -25,12 +26,13 @@ def preprocess(ims, flo):
 
 
 def main():
+    disable_gpu()
 
     if False:
         filename = '/media/ssd/datasets/sintel-processed/sintel.tfrecord'
         reader = get_reader(filename).map(preprocess)
     else:
-        reader = get_dataset().shuffle(buffer_size=1024).map(decode_files).map(preprocess)
+        reader = get_dataset_from_set().map(preprocess)
         # reader = get_dataset().interleave(lambda x: Dataset.from_tensors(x).map(decode_files),
         #                                  cycle_length=tf.data.experimental.AUTOTUNE,
         #                                  num_parallel_calls=tf.data.experimental.AUTOTUNE).map(preprocess)

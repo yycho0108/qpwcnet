@@ -89,6 +89,27 @@ def get_dataset(fc3d_root='/media/hdd/datasets/FlyingThings3D/'):
     return dataset
 
 
+def _count_lines(filename):
+    def _blocks(files, size=65536):
+        while True:
+            b = files.read(size)
+            if not b:
+                break
+            yield b
+
+    with open(filename, "r", encoding="utf-8", errors='ignore') as f:
+        return (sum(bl.count("\n") for bl in _blocks(f)))
+
+
+def get_dataset_from_set(set_file: str = '/home/jamiecho/Repos/Ravel/qpwcnet/data/f3d_set.txt'):
+    def _files_from_line(line):
+        filenames = tf.strings.split(line, sep=' ', maxsplit=3)
+        return filenames[0], filenames[1], filenames[2]
+    l = _count_lines(set_file)
+    return (tf.data.TextLineDataset(set_file).shuffle(l).map(_files_from_line)
+            .map(decode_files, num_parallel_calls=tf.data.experimental.AUTOTUNE, deterministic=False))
+
+
 def test():
     FC3D_ROOT = Path('/media/hdd/datasets/FlyingThings3D/')
     for f_img in FC3D_ROOT.glob('frames_finalpass_webp/TRAIN/*/*/left/*.webp'):
@@ -120,19 +141,19 @@ def test():
 
 
 def main():
+    from tqdm import tqdm
     gen = get_generator()
-    for p, n, f in gen:
-        print(p, n, f)
-        break
+    with open('/tmp/f3d_set.txt', 'w') as fout:
+        for p, n, f in tqdm(gen):
+            fout.write('{} {} {}\n'.format(p, n, f))
 
-    dataset = tf.data.Dataset.from_generator(
-        get_generator, output_types=(tf.string, tf.string, tf.string))
-    dataset = dataset.map(decode_files)
-
-    for ims, flo in dataset:
-        print(ims.shape)
-        print(flo.shape)
-        break
+    # dataset = tf.data.Dataset.from_generator(
+    #    get_generator, output_types=(tf.string, tf.string, tf.string))
+    #dataset = dataset.map(decode_files)
+    # for ims, flo in dataset:
+    #    print(ims.shape)
+    #    print(flo.shape)
+    #    break
 
 
 if __name__ == '__main__':

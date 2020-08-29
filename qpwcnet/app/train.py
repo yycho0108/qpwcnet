@@ -5,7 +5,7 @@ import tensorflow as tf
 import numpy as np
 
 from qpwcnet.core.pwcnet import build_network
-from qpwcnet.data.fchairs3d import get_dataset, decode_files
+from qpwcnet.data.fchairs3d import get_dataset_from_set
 from qpwcnet.data.tfrecord import get_reader, read_record
 from qpwcnet.data.augment import image_augment, image_resize
 
@@ -64,7 +64,7 @@ def train_step(model, losses, optim, ims, flo):
         pred_flows = model(ims)
 
         # Compute loss over all flow pairs at each scale.
-        flow_losses = [l(flo, o) for o, l in zip(pred_flows[:-1], losses[:-1])]
+        flow_losses = [l(flo, o) for o, l in zip(pred_flows[:-1], losses)]
 
         # Finalize error with regularization/auxiliary losses
         loss = sum(flow_losses) + sum(model.losses)
@@ -95,21 +95,20 @@ def epe_error(data_format='channels_last'):
 
 def main():
     # Configure hyperparameters.
-    batch_size = 4
+    batch_size = 6
     num_epoch = 600
     update_freq = 128
     data_format = 'channels_first'
+    allow_memory_growth = False
 
     # Configure memory growth.
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-    except RuntimeError as e:
-        print(e)
-
-    # eager mode is just a recipe for uncompiled disasters...?
-    # tf.compat.v1.disable_eager_execution()
+    if allow_memory_growth:
+        gpus = tf.config.experimental.list_physical_devices('GPU')
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError as e:
+            print(e)
 
     glob_pattern = '/media/ssd/datasets/sintel-processed/shards/sintel-*.tfrecord'
     filenames = tf.data.Dataset.list_files(glob_pattern).shuffle(32)
@@ -122,15 +121,18 @@ def main():
     #           .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
 
     # sintel...
-    dataset = (tf.data.Dataset.list_files(glob_pattern).interleave(
-        lambda x: tf.data.TFRecordDataset(x, compression_type='ZLIB'),
-        cycle_length=tf.data.experimental.AUTOTUNE,
-        num_parallel_calls=tf.data.experimental.AUTOTUNE)
-        .shuffle(buffer_size=32)
-        .map(read_record)
-        .map(preprocess)
-        .batch(batch_size, drop_remainder=True)
-        .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
+    # dataset = (tf.data.Dataset.list_files(glob_pattern).interleave(
+    #     lambda x: tf.data.TFRecordDataset(x, compression_type='ZLIB'),
+    #     cycle_length=tf.data.experimental.AUTOTUNE,
+    #     num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    #     .shuffle(buffer_size=32)
+    #     .map(read_record)
+    #     .map(preprocess)
+    #     .batch(batch_size, drop_remainder=True)
+    #     .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
+
+    dataset = get_dataset_from_set().map(preprocess).batch(
+        batch_size, drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
 
     if False:
         # fchairs3d ...
