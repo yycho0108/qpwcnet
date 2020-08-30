@@ -58,11 +58,11 @@ def image_flip_lr(ims, flo):
     return ims, flo
 
 
-def image_scale_and_crop(ims, flo, crop_shape):
+def image_scale_and_crop(ims, flo, crop_shape, base_scale=1.0):
     im_concat = tf.concat([ims, flo], axis=2)
     # TODO(yycho0108): Fix hardcoded 0.955/1.05.
     scale = tf.random.uniform(
-        [], minval=0.955, maxval=1.05, dtype=tf.float32, seed=None)
+        [], minval=base_scale * 0.955, maxval=base_scale * 1.05, dtype=tf.float32, seed=None)
     # scaled_shape = tf.cast(
     #    tf.cast(ims.shape[:2], tf.float32) * scale, tf.int32)
 
@@ -102,10 +102,10 @@ def image_crop(ims, flo, crop_shape):
     return ims, flo
 
 
-def image_augment(ims, flo, out_shape):
+def image_augment(ims, flo, out_shape, base_scale=1.0):
     ims, flo = image_flip_ud(ims, flo)
     ims, flo = image_flip_lr(ims, flo)
-    ims, flo = image_scale_and_crop(ims, flo, out_shape)
+    ims, flo = image_scale_and_crop(ims, flo, out_shape, base_scale=base_scale)
     ims, flo = image_resize(ims, flo, out_shape)
     ims = image_augment_colors(ims)
     return ims, flo

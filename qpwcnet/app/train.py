@@ -43,11 +43,11 @@ def preprocess_no_op(ims, flo, data_format='channels_first'):
     return ims, flo
 
 
-def preprocess(ims, flo, data_format='channels_first'):
+def preprocess(ims, flo, data_format='channels_first', base_scale=1.0):
     # 0-255 -> 0.0-1.0
     ims = tf.cast(ims, tf.float32) * tf.constant(1.0/255.0, dtype=tf.float32)
     # apply augmentation
-    ims, flo = image_augment(ims, flo, (256, 512))
+    ims, flo = image_augment(ims, flo, (256, 512), base_scale)
     # 0.0-1.0 -> -0.5, 0.5
     ims = ims - 0.5
 
@@ -95,32 +95,29 @@ def epe_error(data_format='channels_last'):
 
 
 def setup_input(batch_size, data_format):
-    def _preprocess(ims, flo):
-        return preprocess(ims, flo, data_format)
 
-    glob_pattern = '/media/ssd/datasets/sintel-processed/shards/sintel-*.tfrecord'
+    # Load MPI Sintel dataset.
+    # def _preprocess(ims, flo):
+    #     return preprocess(ims, flo, data_format)
+    # glob_pattern = '/media/ssd/datasets/sintel-processed/shards/sintel-*.tfrecord'
+    # dataset = (tf.data.Dataset.list_files(glob_pattern).interleave(
+    #     lambda x: tf.data.TFRecordDataset(x, compression_type='ZLIB'),
+    #     cycle_length=tf.data.experimental.AUTOTUNE,
+    #     num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    #     .shuffle(buffer_size=32)
+    #     .map(read_record)
+    #     .map(_preprocess)
+    #     .batch(batch_size, drop_remainder=True)
+    #     .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
 
-    # sintel...
-    dataset = (tf.data.Dataset.list_files(glob_pattern).interleave(
-        lambda x: tf.data.TFRecordDataset(x, compression_type='ZLIB'),
-        cycle_length=tf.data.experimental.AUTOTUNE,
-        num_parallel_calls=tf.data.experimental.AUTOTUNE)
-        .shuffle(buffer_size=32)
-        .map(read_record)
-        .map(_preprocess)
-        .batch(batch_size, drop_remainder=True)
-        .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
-
-    # dataset = get_dataset_from_set().map(preprocess).batch(
-    #    batch_size, drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-
-    # if False:
-    #    # fchairs3d ...
-    #    dataset_fc3d = get_dataset().shuffle(buffer_size=1024).map(
-    #        decode_files).map(preprocess).batch(batch_size, drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-    #    # merge ...
-    #    dataset = dataset.concatenate(dataset_fc3d)
-
+    # Load FlyingChairs3D dataset.
+    def _preprocess_fc3d(ims, flo):
+        return preprocess(ims, flo, data_format, 0.56)
+    dataset = (get_dataset_from_set()
+               .map(preprocess)
+               .batch(batch_size, drop_remainder=True)
+               .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
+    # dataset = dataset.concatenate(dataset_fc3d)
     # dataset = dataset.take(1).cache()
     return dataset
 
@@ -222,7 +219,7 @@ def train_custom(model, losses, dataset, path, config):
         ckpt, str(path['ckpt']), max_to_keep=8)
 
     # Load from checkpoint.
-    # ckpt.restore(tf.train.latest_checkpoint('/tmp/pwc/run/003/ckpt/'))
+    ckpt.restore(tf.train.latest_checkpoint('/tmp/pwc/run/017/ckpt/'))
 
     # Iterate through train loop.
     for epoch in range(num_epoch):
@@ -264,6 +261,12 @@ def train_custom(model, losses, dataset, path, config):
                     if data_format == 'channels_first':
                         # nchw -> nhwc
                         flow_img = tf.transpose(flow_img, (0, 2, 3, 1))
+
+                    # NOTE(yycho0108):
+                    # interpolate nearest (tensorboard visualization applies bilinear interpolation by default).
+                    flow_img = tf.image.resize(flow_img,
+                                               size=val_flow_img.shape[1:3],
+                                               method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
                     flow_imgs.append(flow_img)
 
                 with writer.as_default():

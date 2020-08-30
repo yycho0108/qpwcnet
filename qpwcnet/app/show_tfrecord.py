@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
+from tqdm import tqdm
 
 from qpwcnet.core.util import disable_gpu
 from qpwcnet.data.tfrecord import get_reader
@@ -26,14 +27,37 @@ def preprocess(ims, flo):
     return image_augment(ims, flo, (256, 512))
 
 
+def preprocess_fc3d(ims, flo):
+    ims = tf.cast(ims, tf.float32) * tf.constant(1.0/255.0, dtype=tf.float32)
+    return image_augment(ims, flo, (256, 512), 0.56)
+
+
+def compute_stats(size=1024):
+    reader = (get_dataset_from_set()
+              .map(preprocess_fc3d, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+              .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
+    count = 0
+    means = 0
+    for entry in tqdm(reader.as_numpy_iterator(), total=size):
+        ims, flo = entry
+        mean = np.linalg.norm(flo, axis=-1).mean()
+        means += mean
+        count += 1
+        if count >= size:
+            break
+    print('mean flow : {}'.format(means/count))
+
+
 def main():
     disable_gpu()
+
+    compute_stats()
 
     if False:
         filename = '/media/ssd/datasets/sintel-processed/sintel.tfrecord'
         reader = get_reader(filename).map(preprocess)
     else:
-        reader = get_dataset_from_set().map(preprocess)
+        reader = get_dataset_from_set().map(preprocess_fc3d)
         # reader = get_dataset().interleave(lambda x: Dataset.from_tensors(x).map(decode_files),
         #                                  cycle_length=tf.data.experimental.AUTOTUNE,
         #                                  num_parallel_calls=tf.data.experimental.AUTOTUNE).map(preprocess)
@@ -45,9 +69,10 @@ def main():
         prv = ims[..., :3]
         nxt = ims[..., 3:]
 
-        print(prv.min(), prv.max())
-        print(nxt.min(), nxt.max())
-        print(flo.min(), flo.max())
+        #print('prv', prv.min(), prv.max())
+        #print('nxt', nxt.min(), nxt.max())
+        #print('flo', flo.min(), flo.max())
+        #print('flo', np.linalg.norm(flo, axis=-1).mean())
 
         # show prev reconstructed from nxt.
         # nxt_w = tfa.image.dense_image_warp(nxt[None, ...].astype(
