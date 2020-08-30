@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import tensorflow as tf
+import tensorflow_addons as tfa
 import numpy as np
 
 from qpwcnet.core.pwcnet import build_network
@@ -24,6 +25,16 @@ def learning_rate(batch_size):
     lr_scheduler = tf.keras.optimizers.schedules.PiecewiseConstantDecay(
         boundaries=lr_boundaries, values=lr_values)
     return lr_scheduler
+
+
+def learning_rate_cyclic(batch_size):
+    # Fixed lr boundaries, by number of training samples (not number of batches).
+    lr = tfa.optimizers.Triangular2CyclicalLearningRate(
+        initial_learning_rate=1e-5,
+        maximal_learning_rate=5e-4,
+        step_size=10e3 * (8 / batch_size)
+    )
+    return lr
 
 
 def preprocess_no_op(ims, flo, data_format='channels_first'):
@@ -98,7 +109,7 @@ def setup_input(batch_size, data_format):
 
     # Load MPI Sintel dataset.
     # def _preprocess(ims, flo):
-    #     return preprocess(ims, flo, data_format)
+    #     return preprocess(ims, flo, data_format, 1.0)
     # glob_pattern = '/media/ssd/datasets/sintel-processed/shards/sintel-*.tfrecord'
     # dataset = (tf.data.Dataset.list_files(glob_pattern).interleave(
     #     lambda x: tf.data.TFRecordDataset(x, compression_type='ZLIB'),
@@ -111,12 +122,16 @@ def setup_input(batch_size, data_format):
     #     .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
 
     # Load FlyingChairs3D dataset.
+    # FIXME(yycho0108): 0.56 value here is an inevitable result of:
+    # - the desire to downsample the image resolution
+    # - the requirement that the size of the output image be 256x512.
     def _preprocess_fc3d(ims, flo):
         return preprocess(ims, flo, data_format, 0.56)
     dataset = (get_dataset_from_set()
-               .map(preprocess)
+               .map(_preprocess_fc3d)
                .batch(batch_size, drop_remainder=True)
                .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
+
     # dataset = dataset.concatenate(dataset_fc3d)
     # dataset = dataset.take(1).cache()
     return dataset
@@ -163,7 +178,7 @@ def train_keras(model, losses, dataset, path, config):
     ]
     # optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
     optimizer = tf.keras.optimizers.Adam(
-        learning_rate=learning_rate(batch_size))
+        learning_rate=learning_rate_cyclic(batch_size))
     model.compile(
         optimizer=optimizer,
         loss=losses,
@@ -197,6 +212,7 @@ def train_custom(model, losses, dataset, path, config):
     # Setup metrics.
     metrics = {}
     metrics['loss'] = tf.keras.metrics.Mean(name='loss', dtype=tf.float32)
+    # metrics['epe'] = tf.keras.metrics.Mean(name='epe', dtype=tf.float32)
     for out in model.outputs:
         if data_format == 'channels_first':
             h = out.shape[2]
@@ -210,16 +226,15 @@ def train_custom(model, losses, dataset, path, config):
         preprocess_no_op).batch(batch_size).take(1).cache().as_numpy_iterator())
 
     # Setup handlers for training/logging.
-    lr = learning_rate(batch_size)
-    # lr = 6.25e-6
+    lr = learning_rate_cyclic(batch_size)
     optim = tf.keras.optimizers.Adam(learning_rate=lr)
     writer = tf.summary.create_file_writer(str(path['log']))
-    ckpt = tf.train.Checkpoint(optimizer=optim, net=model)
+    ckpt = tf.train.Checkpoint(optimizer=optim, model=model)
     ckpt_mgr = tf.train.CheckpointManager(
         ckpt, str(path['ckpt']), max_to_keep=8)
 
     # Load from checkpoint.
-    ckpt.restore(tf.train.latest_checkpoint('/tmp/pwc/run/017/ckpt/'))
+    # ckpt.restore(tf.train.latest_checkpoint('/tmp/pwc/run/017/ckpt/'))
 
     # Iterate through train loop.
     for epoch in range(num_epoch):
@@ -271,8 +286,8 @@ def train_custom(model, losses, dataset, path, config):
 
                 with writer.as_default():
                     tf.summary.scalar('iter', opt_iter, step=opt_iter)
-                    tf.summary.scalar(
-                        'learning_rate', lr(opt_iter), step=opt_iter)
+                    tf.summary.scalar('learning_rate', lr(
+                        tf.cast(opt_iter, tf.float32)), step=opt_iter)
                     for k, v in metrics.items():
                         tf.summary.scalar(k, v.result(), step=opt_iter)
                     # will this work?
@@ -292,6 +307,8 @@ def main():
     data_format = 'channels_first'
     allow_memory_growth = False
     use_custom_training = True
+
+    # TODO(yycho0108): Better configuration management.
     config = (batch_size, num_epoch, update_freq, data_format,
               allow_memory_growth, use_custom_training)
 

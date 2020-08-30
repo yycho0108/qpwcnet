@@ -102,12 +102,40 @@ def _count_lines(filename):
 
 
 def get_dataset_from_set(set_file: str = '/home/jamiecho/Repos/Ravel/qpwcnet/data/f3d_set.txt'):
-    def _files_from_line(line):
-        filenames = tf.strings.split(line, sep=' ', maxsplit=3)
-        return filenames[0], filenames[1], filenames[2]
-    l = _count_lines(set_file)
-    return (tf.data.TextLineDataset(set_file).shuffle(l).map(_files_from_line)
-            .map(decode_files, num_parallel_calls=tf.data.experimental.AUTOTUNE, deterministic=False))
+
+    # 1) load text file, preliminary shuffle, then split.
+    with open(set_file, 'r') as f:
+        dataset = [l.strip().split(' ') for l in f.readlines()]
+    dataset = np.asarray(dataset, dtype=np.str)
+    np.random.shuffle(dataset)  # apply initial shuffling, just in case.
+    n = dataset.shape[0]
+
+    def _decode_files(inputs):
+        return decode_files(inputs[0], inputs[1], inputs[2])
+    dataset = (tf.data.Dataset.from_tensor_slices(dataset)
+               .shuffle(n)
+               .map(_decode_files, num_parallel_calls=tf.data.experimental.AUTOTUNE, deterministic=False)
+               )
+
+    # num_shards = 8
+    # shards = np.array_split(dataset, num_shards)
+
+    # # 2) convert to tfrecord, reshuffle, then decode.
+    # dataset = (tf.data.Dataset.range(num_shards).interleave(
+    #     lambda i: tf.data.Dataset.from_tensor_slices(shards[i]),
+    #     cycle_length=tf.data.experimental.AUTOTUNE,
+    #     num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    #     .shuffle(n)
+    #     .map(decode_files, num_parallel_calls=tf.data.experimental.AUTOTUNE, deterministic=False)
+    # )
+    return dataset
+
+    # def _files_from_line(line):
+    #    filenames = tf.strings.split(line, sep=' ', maxsplit=3)
+    #    return filenames[0], filenames[1], filenames[2]
+    # l = _count_lines(set_file)
+    # return (tf.data.TextLineDataset(set_file).shuffle(l).map(_files_from_line)
+    #        .map(decode_files, num_parallel_calls=tf.data.experimental.AUTOTUNE, deterministic=False))
 
 
 def test():
@@ -134,9 +162,9 @@ def test():
 
     # FC3D_ROOT / 'frames_finalpass_webp' / 'TRAIN' / 'A' / '0000' /  'left' /
 
-    #img_bytes = tf.io.read_file('/media/hdd/datasets/FlyingThings3D/frames_finalpass_webp/TRAIN/A/0000/left/0006.webp')
-    #img_rgba = tfio.image.decode_webp(img_bytes)
-    #cv2.imshow('img', img_rgba.numpy())
+    # img_bytes = tf.io.read_file('/media/hdd/datasets/FlyingThings3D/frames_finalpass_webp/TRAIN/A/0000/left/0006.webp')
+    # img_rgba = tfio.image.decode_webp(img_bytes)
+    # cv2.imshow('img', img_rgba.numpy())
     # cv2.waitKey(0)
 
 
@@ -149,7 +177,7 @@ def main():
 
     # dataset = tf.data.Dataset.from_generator(
     #    get_generator, output_types=(tf.string, tf.string, tf.string))
-    #dataset = dataset.map(decode_files)
+    # dataset = dataset.map(decode_files)
     # for ims, flo in dataset:
     #    print(ims.shape)
     #    print(flo.shape)
