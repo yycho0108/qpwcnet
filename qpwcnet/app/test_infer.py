@@ -24,6 +24,11 @@ def preprocess(ims, flo):
     ims, flo = image_augment(ims, flo, (256, 512))
     # 0.0-1.0 -> -0.5, 0.5
     ims = ims - 0.5
+
+    # HWC -> CHW
+    ims = tf.transpose(ims, (2, 0, 1))
+    flo = tf.transpose(flo, (2, 0, 1))
+
     return ims, flo
 
 
@@ -37,12 +42,12 @@ def main():
     model = build_network(train=False)
 
     # restore
-    if False:
+    if True:
         # from ckpt
         ckpt = tf.train.Checkpoint(
             optimizer=tf.keras.optimizers.Adam(), net=model)
         ckpt_mgr = tf.train.CheckpointManager(
-            ckpt, '/tmp/pwc/run/009/ckpt/', max_to_keep=8)
+            ckpt, '/tmp/pwc/run/039/ckpt/', max_to_keep=8)
         ckpt.restore(ckpt_mgr.latest_checkpoint).expect_partial()
     else:
         # from hdf5
@@ -61,7 +66,7 @@ def main():
         rhs = cv2.resize(rhs, (512, 256))
         x = np.concatenate([lhs, rhs], axis=-1)[None, ...]
         # FIXME(yycho0108): the series of above operations replicate preprocess() data whitening procedure.
-        y = 20.0 * model(x/255.0 - 0.5).numpy()
+        y = model(x/255.0 - 0.5).numpy()
         rhs_w = tf_warp(rhs[None, ...].astype(np.float32)/255.0,
                         y)[0].numpy()
 
@@ -84,16 +89,17 @@ def main():
             buffer_size=32).map(preprocess).batch(1)
 
         for ims, flo in dataset:
-            prv = ims[..., :3]
-            nxt = ims[..., 3:]
-            flo_pred = 20.0 * model(ims)
+            prv = ims[:, :3]
+            nxt = ims[:, 3:]
+            flo_pred = model(ims)
             # flo_pred = flo
-            nxt_w = tf_warp(nxt, flo_pred)
+            nxt_w = tf_warp(tf.transpose(nxt, (0, 2, 3, 1)),
+                            tf.transpose(flo_pred, (0, 2, 3, 1)))
 
             # --> numpy
-            prv = 0.5 + prv[0].numpy()
-            nxt = 0.5 + nxt[0].numpy()
-            flo_pred = flo_pred[0].numpy()
+            prv = 0.5 + prv[0].numpy().transpose(1, 2, 0)
+            nxt = 0.5 + nxt[0].numpy().transpose(1, 2, 0)
+            flo_pred = flo_pred[0].numpy().transpose(1, 2, 0)
             nxt_w = 0.5 + nxt_w[0].numpy()
 
             cv2.imshow('prv', prv)
@@ -103,8 +109,8 @@ def main():
 
             cv2.imshow('flow-x', normalize(flo_pred[..., 0]))
             cv2.imshow('flow-y', normalize(flo_pred[..., 1]))
-            cv2.imshow('flow-x-gt', normalize(flo[0, ..., 0].numpy()))
-            cv2.imshow('flow-y-gt', normalize(flo[0, ..., 1].numpy()))
+            cv2.imshow('flow-x-gt', normalize(flo[0, 0, ...].numpy()))
+            cv2.imshow('flow-y-gt', normalize(flo[0, 1, ...].numpy()))
 
             cv2.imshow('nxt-w', nxt_w)
             k = cv2.waitKey(0)

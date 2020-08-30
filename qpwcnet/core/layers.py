@@ -85,8 +85,9 @@ class CostVolume(tf.keras.layers.Layer):
                 cost_vol.append(cost)
         cost_vol = tf.concat(cost_vol, axis=self.axis)
         # I simply cannot think of a reason for this to exist.
-        # cost_vol = tf.nn.leaky_relu(cost_vol, alpha=0.1, name=name)
-        return cost_vol
+        # Maybe this will prevent NaNs?
+        out = tf.nn.leaky_relu(cost_vol, 0.1)
+        return out
 
     def get_config(self):
         config = super().get_config().copy()
@@ -116,7 +117,8 @@ class CostVolumeV2(tf.keras.layers.Layer):
     def call(self, inputs):
         prv, nxt = inputs
         cost_vol = self.corr([prv, nxt])
-        return cost_vol
+        out = tf.nn.leaky_relu(cost_vol, 0.1)
+        return out
 
     def get_config(self):
         config = super().get_config().copy()
@@ -240,11 +242,18 @@ class WarpV2(tf.keras.layers.Layer):
         self._config = {
             'data_format': data_format
         }
+        self.data_format = data_format
         super().__init__(*args, **kwargs)
 
     def call(self, inputs):
         img, flo = inputs
-        out = tfa.image.dense_image_warp(img, -flo[..., ::-1])
+        if self.data_format == 'channels_first':
+            img = tf.transpose(img, (0, 2, 3, 1))
+            flo = tf.transpose(flo, (0, 2, 3, 1))
+            out = tfa.image.dense_image_warp(img, -flo[..., ::-1])
+            out = tf.transpose(out, (0, 3, 1, 2))
+        else:
+            out = tfa.image.dense_image_warp(img, -flo[..., ::-1])
         return out
 
     def get_config(self):
@@ -340,7 +349,7 @@ class UpConv(tf.keras.layers.Layer):
 
 
 class OptFlow(tf.keras.layers.Layer):
-    filters = [128, 128, 96, 64, 32, 2]
+    filters = [128, 64, 32, 16, 8, 2]
 
     def __init__(self, data_format='channels_first', *args, **kwargs):
         self._config = {
@@ -354,14 +363,27 @@ class OptFlow(tf.keras.layers.Layer):
             conv = tf.keras.layers.SeparableConv2D(
                 filters=f, kernel_size=3, strides=1, padding='same', activation=activation,
                 use_bias=use_bias,
-                depthwise_regularizer=tf.keras.regularizers.l2(0.0004),
-                pointwise_regularizer=tf.keras.regularizers.l2(0.0004),
+                # depthwise_regularizer=tf.keras.regularizers.l2(0.0004),
+                # pointwise_regularizer=tf.keras.regularizers.l2(0.0004),
                 data_format=data_format
             )
             # conv = tf.keras.layers.Conv2D(
             #    filters=f, kernel_size=3, strides=1, padding='same', activation=activation)
             self.flow.append(conv)
         super().__init__(*args, **kwargs)
+
+    # def build(self, input_shapes):
+    #    shape = input_shapes[0]
+    #    if self.data_format == 'channels_first':
+    #        self.h = shape[2]
+    #        self.w = shape[3]
+    #    elif self.data_format == 'channels_last':
+    #        self.h = shape[1]
+    #        self.w = shape[2]
+    #    else:
+    #        raise ValueError(
+    #            'Unsupported data format : {}'.format(self.data_format))
+    #    super().build(input_shapes)
 
     def call(self, inputs):
         x = inputs
@@ -391,7 +413,7 @@ class Flow(tf.keras.layers.Layer):
 
         self.flow = OptFlow(data_format=data_format)
         self.axis = _get_axis(data_format)
-        # self.cost_volume = CostVolume()
+        # self.cost_volume = CostVolume(data_format=data_format)
         self.cost_volume = CostVolumeV2(data_format=data_format)
 
         super().__init__(*args, **kwargs)
@@ -426,8 +448,8 @@ class UpFlow(tf.keras.layers.Layer):
         }
         self.flow = OptFlow(data_format=data_format)
         # self.warp = Warp(data_format=data_format)
-        self.warp = Warp(data_format=data_format)
-        # self.cost_volume = CostVolume()
+        self.warp = WarpV2(data_format=data_format)
+        # self.cost_volume = CostVolume(data_format=data_format)
         self.cost_volume = CostVolumeV2(data_format=data_format)
         self.axis = _get_axis(data_format)
         super().__init__(*args, **kwargs)
@@ -473,17 +495,37 @@ class DownConv(tf.keras.layers.Layer):
         }
         # self.conv = tf.keras.layers.SeparableConv2D(filters=num_filters, kernel_size=3,
         #                                            strides=2, activation='Mish', padding='same')
-        self.conv = tf.keras.layers.Conv2D(filters=num_filters, kernel_size=3,
-                                           strides=2, activation='Mish', padding='same',
-                                           kernel_regularizer=tf.keras.regularizers.l2(
-                                               0.0004),
-                                           data_format=data_format)
+
+        self.conv_a = tf.keras.layers.Conv2D(filters=num_filters, kernel_size=3,
+                                             strides=2, activation='Mish', padding='same',
+                                             kernel_regularizer=tf.keras.regularizers.l2(
+                                                 0.0004),
+                                             data_format=data_format)
+
+        self.conv_aa = tf.keras.layers.Conv2D(filters=num_filters, kernel_size=3,
+                                              strides=1, activation='Mish', padding='same',
+                                              kernel_regularizer=tf.keras.regularizers.l2(
+                                                  0.0004),
+                                              data_format=data_format)
+
+        self.conv_b = tf.keras.layers.Conv2D(filters=num_filters, kernel_size=3,
+                                             strides=1, activation='Mish', padding='same',
+                                             kernel_regularizer=tf.keras.regularizers.l2(
+                                                 0.0004),
+                                             data_format=data_format)
         axis = _get_axis(data_format)
-        self.norm = tfa.layers.GroupNormalization(groups=4, axis=axis)
+        self.norm_a = tfa.layers.GroupNormalization(groups=4, axis=axis)
+        self.norm_aa = tfa.layers.GroupNormalization(groups=4, axis=axis)
+        self.norm_b = tfa.layers.GroupNormalization(groups=4, axis=axis)
+
         super().__init__(*args, **kwargs)
 
     def call(self, inputs, training=None):
-        return self.norm(self.conv(inputs), training=training)
+        x = inputs
+        x = self.norm_a(self.conv_a(x), training=training)
+        x = self.norm_aa(self.conv_aa(x), training=training)
+        x = self.norm_b(self.conv_b(x), training=training)
+        return x
 
     def get_config(self):
         config = super().get_config().copy()

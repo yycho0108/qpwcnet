@@ -24,7 +24,7 @@ def build_network(train=True, data_format='channels_first') -> tf.keras.Model:
 
     # Compute features.
     feat_layers = []
-    for f in [32, 64, 96, 128, 192]:
+    for f in [16, 32, 64, 128, 256]:
         feat_layers.append(DownConv(f, data_format))
 
     feats_prv = []
@@ -46,7 +46,7 @@ def build_network(train=True, data_format='channels_first') -> tf.keras.Model:
     for feat_prv, feat_nxt in zip(feats_prv[::-1], feats_nxt[::-1]):
         if flo is not None:
             # Compute upsampled flow from the previous layer.
-            flo_u = Upsample()(flo)
+            flo_u = Upsample(data_format=data_format)(flo)
 
             # Compute the refined flow.
             args = (feat_prv, feat_nxt, flo_u)
@@ -58,7 +58,7 @@ def build_network(train=True, data_format='channels_first') -> tf.keras.Model:
         flos.append(flo)
 
     # Compute final full-res optical flow.
-    flo = Upsample()(flo)
+    flo = Upsample(data_format=data_format)(flo)
     flos.append(flo)
 
     if train:

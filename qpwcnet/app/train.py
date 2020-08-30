@@ -10,6 +10,7 @@ from qpwcnet.data.tfrecord import get_reader, read_record
 from qpwcnet.data.augment import image_augment, image_resize
 
 from qpwcnet.train.loss import FlowMseLoss, FlowMseLossFineTune
+from qpwcnet.core.vis import flow_to_image
 
 
 def learning_rate(batch_size):
@@ -25,7 +26,7 @@ def learning_rate(batch_size):
     return lr_scheduler
 
 
-def preprocess_passthrough(ims, flo):
+def preprocess_no_op(ims, flo, data_format='channels_first'):
     # 0-255 -> 0.0-1.0
     ims = tf.cast(ims, tf.float32) * tf.constant(1.0/255.0, dtype=tf.float32)
 
@@ -36,12 +37,13 @@ def preprocess_passthrough(ims, flo):
     ims = ims - 0.5
 
     # HWC -> CHW
-    ims = tf.transpose(ims, (2, 0, 1))
-    flo = tf.transpose(flo, (2, 0, 1))
+    if data_format == 'channels_first':
+        ims = tf.transpose(ims, (2, 0, 1))
+        flo = tf.transpose(flo, (2, 0, 1))
     return ims, flo
 
 
-def preprocess(ims, flo):
+def preprocess(ims, flo, data_format='channels_first'):
     # 0-255 -> 0.0-1.0
     ims = tf.cast(ims, tf.float32) * tf.constant(1.0/255.0, dtype=tf.float32)
     # apply augmentation
@@ -50,8 +52,9 @@ def preprocess(ims, flo):
     ims = ims - 0.5
 
     # HWC -> CHW
-    ims = tf.transpose(ims, (2, 0, 1))
-    flo = tf.transpose(flo, (2, 0, 1))
+    if data_format == 'channels_first':
+        ims = tf.transpose(ims, (2, 0, 1))
+        flo = tf.transpose(flo, (2, 0, 1))
 
     return ims, flo
 
@@ -85,21 +88,209 @@ def train_step(model, losses, optim, ims, flo):
 def epe_error(data_format='channels_last'):
     axis = -1 if (data_format == 'channels_last') else 1
 
-    def _epe_error(flo_label, flo_outputs):
-        flo_pred = flo_outputs[-1]
-        flo_gt = flo_label
-        err = tf.norm(flo_pred - flo_gt, ord=2, axis=axis)
+    def _epe_error(y_true, y_pred):
+        err = tf.norm(y_true - y_pred, ord=2, axis=axis)
         return tf.reduce_mean(err)
     return _epe_error
 
 
+def setup_input(batch_size, data_format):
+    def _preprocess(ims, flo):
+        return preprocess(ims, flo, data_format)
+
+    glob_pattern = '/media/ssd/datasets/sintel-processed/shards/sintel-*.tfrecord'
+
+    # sintel...
+    dataset = (tf.data.Dataset.list_files(glob_pattern).interleave(
+        lambda x: tf.data.TFRecordDataset(x, compression_type='ZLIB'),
+        cycle_length=tf.data.experimental.AUTOTUNE,
+        num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        .shuffle(buffer_size=32)
+        .map(read_record)
+        .map(_preprocess)
+        .batch(batch_size, drop_remainder=True)
+        .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
+
+    # dataset = get_dataset_from_set().map(preprocess).batch(
+    #    batch_size, drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+
+    # if False:
+    #    # fchairs3d ...
+    #    dataset_fc3d = get_dataset().shuffle(buffer_size=1024).map(
+    #        decode_files).map(preprocess).batch(batch_size, drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+    #    # merge ...
+    #    dataset = dataset.concatenate(dataset_fc3d)
+
+    # dataset = dataset.take(1).cache()
+    return dataset
+
+
+def setup_path(root='/tmp/pwc'):
+    root = Path('/tmp/pwc')
+    run_root = root / 'run'
+    run_root.mkdir(parents=True, exist_ok=True)
+    # NOTE(yycho0108): Automatically computing run id.
+    run_id = len(list(run_root.iterdir()))
+    run_dir = run_root / '{:03d}'.format(run_id)
+    log_dir = run_dir / 'log'
+    ckpt_dir = run_dir / 'ckpt'
+
+    # Ensure directories exist.
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    path = {
+        'pwc_root': root,
+        'run_root': run_root,
+        'run': run_dir,
+        'ckpt': ckpt_dir,
+        'log': log_dir,
+        'id': run_id
+    }
+    return path
+
+
+def train_keras(model, losses, dataset, path, config):
+    # Unroll config.
+    (batch_size, num_epoch, update_freq, data_format,
+     allow_memory_growth, use_custom_training) = config
+
+    callbacks = [
+        # tf.keras.callbacks.EarlyStopping(patience=2),
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(path['ckpt'] / '{epoch:03d}.hdf5')),
+        tf.keras.callbacks.TensorBoard(
+            update_freq=update_freq,  # every 128 batches
+            log_dir=path['log'], profile_batch='2,66'),
+    ]
+    # optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
+    optimizer = tf.keras.optimizers.Adam(
+        learning_rate=learning_rate(batch_size))
+    model.compile(
+        optimizer=optimizer,
+        loss=losses,
+        # FIXME(yycho0108): This is super ugly, but probably works for now.
+        metrics={'upsample_4': epe_error(data_format)}
+    )
+
+    # Restore from previous checkpoint.
+    if False:
+        latest_ckpt = tf.train.latest_checkpoint('/tmp/pwc/run/003/ckpt/')
+        tf.train.Checkpoint(optimizer=optimizer,
+                            model=model).restore(latest_ckpt)
+        # or ...
+        # model.load_weights(latest_ckpt)?
+
+    model.fit(dataset,
+              epochs=num_epoch,
+              callbacks=callbacks)
+    model.save_weights(str(path['run'] / 'model.h5'))
+
+
+def train_custom(model, losses, dataset, path, config):
+    """
+    Custom training loop.
+    """
+
+    # Unroll config.
+    (batch_size, num_epoch, update_freq, data_format,
+     allow_memory_growth, use_custom_training) = config
+
+    # Setup metrics.
+    metrics = {}
+    metrics['loss'] = tf.keras.metrics.Mean(name='loss', dtype=tf.float32)
+    for out in model.outputs:
+        if data_format == 'channels_first':
+            h = out.shape[2]
+        else:
+            h = out.shape[1]
+        name = 'flow-loss-{:02d}'.format(h)
+        metrics[name] = tf.keras.metrics.Mean(name=name, dtype=tf.float32)
+
+    # Retrieve validation dataset (only used for visualization for now) ...
+    val_data = next(get_dataset_from_set().map(
+        preprocess_no_op).batch(batch_size).take(1).cache().as_numpy_iterator())
+
+    # Setup handlers for training/logging.
+    lr = learning_rate(batch_size)
+    # lr = 6.25e-6
+    optim = tf.keras.optimizers.Adam(learning_rate=lr)
+    writer = tf.summary.create_file_writer(str(path['log']))
+    ckpt = tf.train.Checkpoint(optimizer=optim, net=model)
+    ckpt_mgr = tf.train.CheckpointManager(
+        ckpt, str(path['ckpt']), max_to_keep=8)
+
+    # Load from checkpoint.
+    # ckpt.restore(tf.train.latest_checkpoint('/tmp/pwc/run/003/ckpt/'))
+
+    # Iterate through train loop.
+    for epoch in range(num_epoch):
+        print('Epoch {:03d}/{:03d}'.format(epoch, num_epoch))
+        # prepare epoch.
+        for v in metrics.values():
+            v.reset_states()
+
+        # train epoch.
+        for ims, flo in dataset:
+            opt_iter, flow_loss, step_loss = train_step(
+                model, losses, optim,  ims, flo)
+
+            # update metrics.
+            metrics['loss'].update_state(step_loss)
+            for out, l in zip(model.outputs, flow_loss):
+                if data_format == 'channels_first':
+                    h = out.shape[2]
+                else:
+                    h = out.shape[1]
+                name = 'flow-loss-{:02d}'.format(h)
+                metrics[name].update_state(l)
+
+            # log/save.
+            if (opt_iter > 0) and ((opt_iter % update_freq) == 0):
+                # compute flows and output image.
+                val_ims, val_flo = val_data
+
+                # First add ground truth flow ...
+                val_flow_img = flow_to_image(val_flo, data_format=data_format)
+                if data_format == 'channels_first':
+                    # nchw -> nhwc
+                    val_flow_img = tf.transpose(val_flow_img, (0, 2, 3, 1))
+                flow_imgs = [val_flow_img]
+
+                flows = model(val_ims, training=False)
+                for flow in flows:
+                    flow_img = flow_to_image(flow, data_format=data_format)
+                    if data_format == 'channels_first':
+                        # nchw -> nhwc
+                        flow_img = tf.transpose(flow_img, (0, 2, 3, 1))
+                    flow_imgs.append(flow_img)
+
+                with writer.as_default():
+                    tf.summary.scalar('iter', opt_iter, step=opt_iter)
+                    tf.summary.scalar(
+                        'learning_rate', lr(opt_iter), step=opt_iter)
+                    for k, v in metrics.items():
+                        tf.summary.scalar(k, v.result(), step=opt_iter)
+                    # will this work?
+                    for i, flow_img in enumerate(flow_imgs):
+                        name = 'flow-{:02d}'.format(i)
+                        tf.summary.image(name, flow_img, step=opt_iter,
+                                         max_outputs=3)
+        ckpt_mgr.save(epoch)
+    model.save_weights(str(path['run'] / 'model.h5'))
+
+
 def main():
     # Configure hyperparameters.
-    batch_size = 6
+    batch_size = 16
     num_epoch = 600
-    update_freq = 128
+    update_freq = 16
     data_format = 'channels_first'
     allow_memory_growth = False
+    use_custom_training = True
+    config = (batch_size, num_epoch, update_freq, data_format,
+              allow_memory_growth, use_custom_training)
 
     # Configure memory growth.
     if allow_memory_growth:
@@ -110,139 +301,31 @@ def main():
         except RuntimeError as e:
             print(e)
 
-    glob_pattern = '/media/ssd/datasets/sintel-processed/shards/sintel-*.tfrecord'
-    filenames = tf.data.Dataset.list_files(glob_pattern).shuffle(32)
-    # dataset = get_reader(filenames).shuffle(buffer_size=1024).repeat().batch(8)
-    # dataset = get_reader(filenames).batch(8).repeat()
-    # dataset = (get_reader(filenames)
-    #           .shuffle(buffer_size=32)
-    #           .map(preprocess)
-    #           .batch(batch_size, drop_remainder=True)
-    #           .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
+    dataset = setup_input(batch_size, data_format)
 
-    # sintel...
-    # dataset = (tf.data.Dataset.list_files(glob_pattern).interleave(
-    #     lambda x: tf.data.TFRecordDataset(x, compression_type='ZLIB'),
-    #     cycle_length=tf.data.experimental.AUTOTUNE,
-    #     num_parallel_calls=tf.data.experimental.AUTOTUNE)
-    #     .shuffle(buffer_size=32)
-    #     .map(read_record)
-    #     .map(preprocess)
-    #     .batch(batch_size, drop_remainder=True)
-    #     .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
-
-    dataset = get_dataset_from_set().map(preprocess).batch(
-        batch_size, drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-
-    if False:
-        # fchairs3d ...
-        dataset_fc3d = get_dataset().shuffle(buffer_size=1024).map(
-            decode_files).map(preprocess).batch(batch_size, drop_remainder=True).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-        # merge ...
-        dataset = dataset.concatenate(dataset_fc3d)
-
-    # dataset = dataset.take(1).cache()
     model = build_network(train=True, data_format=data_format)
 
     # Create losses, flow mse
-    losses = []
-    for out in model.outputs[:-1]:
-        losses.append(FlowMseLoss(data_format=data_format))
-        # losses.append(FlowMseLossFineTune())
+    # NOTE(yycho0108): The final output (result of bilinear interpolation) is not included.
+    losses = [FlowMseLoss(data_format=data_format) for o in model.outputs[:-1]]
+    # losses = [FlowMseLossFineTune(data_format=data_format) for o in model.outputs]
 
     # Setup directory structure.
-    root = Path('/tmp/pwc')
-    run_root = root / 'run'
-    run_root.mkdir(parents=True, exist_ok=True)
-    # NOTE(yycho0108): Automatically computing run id.
-    run_id = len(list(run_root.iterdir()))
-    run_dir = run_root / '{:03d}'.format(run_id)
-    log_dir = run_dir / 'log'
-    ckpt_dir = run_dir / 'ckpt'
-    print('run_id = {}'.format(run_id))
+    path = setup_path()
+    print('Run id = {}'.format(path['id']))
 
-    if False:
-        # Custom training loop.
+    # Train.
+    with open(path['run'] / 'config.txt', 'w') as f_cfg:
+        names = ['batch_size', 'num_epoch', 'update_freq',
+                 'data_format', 'allow_memory_growth', 'use_custom_training']
+        values = config
+        cfg = {k: v for (k, v) in zip(names, values)}
+        f_cfg.write('{}'.format(cfg))
 
-        # Setup metrics.
-        metrics = {}
-        metrics['loss'] = tf.keras.metrics.Mean(name='loss', dtype=tf.float32)
-        for out in model.outputs:
-            name = 'flow-loss-{:02d}'.format(out.shape[1])
-            metrics[name] = tf.keras.metrics.Mean(name=name, dtype=tf.float32)
-
-        # Setup handlers for training/logging.
-        lr = learning_rate(batch_size)
-        # lr = 6.25e-6
-        optim = tf.keras.optimizers.Adam(learning_rate=lr)
-        writer = tf.summary.create_file_writer(str(log_dir))
-        ckpt = tf.train.Checkpoint(optimizer=optim, net=model)
-        ckpt_mgr = tf.train.CheckpointManager(
-            ckpt, str(ckpt_dir), max_to_keep=8)
-
-        # [Optional] load checkpoint.
-        if False:
-            load_ckpt = tf.train.Checkpoint(optimizer=optim, net=model)
-            # load_ckpt_mgr = tf.train.CheckpointManager(
-            #    load_ckpt, '/tmp/pwc/run/006/ckpt/', max_to_keep=8)
-            load_ckpt_mgr = tf.train.CheckpointManager(
-                load_ckpt, '/tmp/pwc/run/007/ckpt/', max_to_keep=8)
-            load_ckpt.restore(load_ckpt_mgr.latest_checkpoint)
-
-        # Iterate through train loop.
-        for epoch in range(num_epoch):
-            print('Epoch {:03d}/{:03d}'.format(epoch, num_epoch))
-            # prepare epoch.
-            for v in metrics.values():
-                v.reset_states()
-
-            # train epoch.
-            for ims, flo in dataset:
-                opt_iter, flow_loss, step_loss = train_step(
-                    model, losses, optim,  ims, flo)
-                # update metrics.
-                metrics['loss'].update_state(step_loss)
-                for out, l in zip(model.outputs, flow_loss):
-                    name = 'flow-loss-{:02d}'.format(out.shape[1])
-                    metrics[name].update_state(l)
-
-            # log/save.
-            with writer.as_default():
-                tf.summary.scalar('iter', opt_iter, step=epoch)
-                tf.summary.scalar('learning_rate', lr(opt_iter), step=epoch)
-                # tf.summary.scalar('learning_rate', lr, step=epoch)
-                for k, v in metrics.items():
-                    tf.summary.scalar(k, v.result(), step=epoch)
-            ckpt_mgr.save(epoch)
-        model.save_weights(str(run_dir / 'model.h5'))
-
-    if True:
-        callbacks = [
-            # tf.keras.callbacks.EarlyStopping(patience=2),
-            tf.keras.callbacks.ModelCheckpoint(
-                filepath=str(ckpt_dir / '{epoch:03d}.hdf5')),
-            tf.keras.callbacks.TensorBoard(
-                update_freq=update_freq,  # every 128 batches
-                log_dir=log_dir, profile_batch='2,66'),
-        ]
-        # The following perhaps "standard" keras training loop has been removed
-        # due to a stupid memory leak(?)
-        # Create losses, flow epe
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(
-                learning_rate=learning_rate(batch_size)),
-            loss=losses,
-            # FIXME(yycho0108): This is super ugly, but probably works for now.
-            metrics={'upsample_4': epe_error(data_format)}
-        )
-        #print('model losses')
-        # print(model.losses)
-        #print([t.name for t in model.losses])
-        # return
-        model.fit(dataset,
-                  epochs=100,
-                  callbacks=callbacks)
-        model.save_weights(str(run_dir / 'model.h5'))
+    if use_custom_training:
+        train_custom(model, losses, dataset, path, config)
+    else:
+        train_keras(model, losses, dataset, path, config)
 
 
 if __name__ == '__main__':

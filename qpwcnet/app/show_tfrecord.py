@@ -10,6 +10,7 @@ from qpwcnet.data.tfrecord import get_reader
 from qpwcnet.data.fchairs3d import get_dataset_from_set
 from qpwcnet.data.augment import image_augment, image_resize
 from qpwcnet.core.warp import tf_warp
+from qpwcnet.core.vis import flow_to_image
 
 
 def normalize(x):
@@ -40,6 +41,7 @@ def main():
     reader.shuffle(buffer_size=32)
     for entry in reader.as_numpy_iterator():
         ims, flo = entry
+        flo_vis = flow_to_image(flo)
         prv = ims[..., :3]
         nxt = ims[..., 3:]
 
@@ -71,6 +73,7 @@ def main():
             (nxt_w).mean(axis=-1)], axis=-1)
         cv2.imshow('overlay', overlay)
         cv2.imshow('flo', normalize(flo[..., 0]))
+        cv2.imshow('flo-vis', flo_vis.numpy())
         k = cv2.waitKey(0)
         if k == 27:
             break
