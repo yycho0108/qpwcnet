@@ -17,15 +17,19 @@ Here's a sample output from a trained model on an excerpt from the Sintel datase
 
 
 Previous Frame:
+
 ![prv](img/2021-01-24-prv.png)
 
-Next Frmae
+Next Frame:
+
 ![nxt](img/2021-01-24-prv.png)
 
 Ground Truth Flow visualization:
+
 ![ground-truth](img/2021-01-24-flow-rgb-gt.png)
 
 Predicted Flow visualization:
+
 ![pred](img/2021-01-24-flow-rgb.png)
 
 ## References
