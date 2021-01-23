@@ -6,9 +6,10 @@ import tensorflow as tf
 
 from qpwcnet.core.pwcnet import build_network
 from qpwcnet.core.warp import tf_warp
+from qpwcnet.core.vis import flow_to_image
+
 from qpwcnet.data.tfrecord import get_reader
 from qpwcnet.data.augment import image_resize, image_augment
-
 
 def normalize(x):
     x = np.asarray(x)
@@ -100,6 +101,11 @@ def main():
             prv = 0.5 + prv[0].numpy().transpose(1, 2, 0)
             nxt = 0.5 + nxt[0].numpy().transpose(1, 2, 0)
             flo_pred = flo_pred[0].numpy().transpose(1, 2, 0)
+
+            # Colorize
+            flo_clast = tf.transpose(flo[0], (1, 2, 0)) # NCHW -> NHWC
+            flo_rgb = flow_to_image(flo_clast).numpy()
+            flo_pred_rgb = flow_to_image(flo_pred).numpy()
             nxt_w = 0.5 + nxt_w[0].numpy()
 
             cv2.imshow('prv', prv)
@@ -109,8 +115,11 @@ def main():
 
             cv2.imshow('flow-x', normalize(flo_pred[..., 0]))
             cv2.imshow('flow-y', normalize(flo_pred[..., 1]))
+            cv2.imshow('flow-rgb',  flo_pred_rgb)
+
             cv2.imshow('flow-x-gt', normalize(flo[0, 0, ...].numpy()))
             cv2.imshow('flow-y-gt', normalize(flo[0, 1, ...].numpy()))
+            cv2.imshow('flow-rgb-gt', flo_rgb)
 
             cv2.imshow('nxt-w', nxt_w)
             k = cv2.waitKey(0)
