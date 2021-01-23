@@ -7,6 +7,9 @@ from qpwcnet.core.warp import get_pixel_value
 from qpwcnet.core.mish import Mish
 
 
+gamma = 0.0004
+
+
 def lrelu(x):
     return tf.nn.leaky_relu(x, 0.1)
 
@@ -330,7 +333,7 @@ class UpConv(tf.keras.layers.Layer):
                                                     padding='same',
                                                     activation=None,
                                                     kernel_regularizer=tf.keras.regularizers.l2(
-                                                        0.0004),
+                                                        gamma),
                                                     data_format=data_format
                                                     )
         super().__init__(*args, **kwargs)
@@ -363,8 +366,8 @@ class OptFlow(tf.keras.layers.Layer):
             conv = tf.keras.layers.SeparableConv2D(
                 filters=f, kernel_size=3, strides=1, padding='same', activation=activation,
                 use_bias=use_bias,
-                # depthwise_regularizer=tf.keras.regularizers.l2(0.0004),
-                # pointwise_regularizer=tf.keras.regularizers.l2(0.0004),
+                # depthwise_regularizer=tf.keras.regularizers.l2(gamma),
+                # pointwise_regularizer=tf.keras.regularizers.l2(gamma),
                 data_format=data_format
             )
             # conv = tf.keras.layers.Conv2D(
@@ -499,19 +502,19 @@ class DownConv(tf.keras.layers.Layer):
         self.conv_a = tf.keras.layers.Conv2D(filters=num_filters, kernel_size=3,
                                              strides=2, activation='Mish', padding='same',
                                              kernel_regularizer=tf.keras.regularizers.l2(
-                                                 0.0004),
+                                                 gamma),
                                              data_format=data_format)
 
         self.conv_aa = tf.keras.layers.Conv2D(filters=num_filters, kernel_size=3,
                                               strides=1, activation='Mish', padding='same',
                                               kernel_regularizer=tf.keras.regularizers.l2(
-                                                  0.0004),
+                                                  gamma),
                                               data_format=data_format)
 
         self.conv_b = tf.keras.layers.Conv2D(filters=num_filters, kernel_size=3,
                                              strides=1, activation='Mish', padding='same',
                                              kernel_regularizer=tf.keras.regularizers.l2(
-                                                 0.0004),
+                                                 gamma),
                                              data_format=data_format)
         axis = _get_axis(data_format)
         self.norm_a = tfa.layers.GroupNormalization(groups=4, axis=axis)

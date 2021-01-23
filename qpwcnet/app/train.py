@@ -30,8 +30,8 @@ def learning_rate(batch_size):
 def learning_rate_cyclic(batch_size):
     # Fixed lr boundaries, by number of training samples (not number of batches).
     lr = tfa.optimizers.Triangular2CyclicalLearningRate(
-        initial_learning_rate=1e-5,
-        maximal_learning_rate=5e-4,
+        initial_learning_rate=1e-4,
+        maximal_learning_rate=5e-3,
         step_size=10e3 * (8 / batch_size)
     )
     return lr
@@ -83,6 +83,8 @@ def train_step(model, losses, optim, ims, flo):
         # Finalize error with regularization/auxiliary losses
         loss = sum(flow_losses) + sum(model.losses)
 
+    # Protection against NaN gradients.
+    # Maybe this occurs due to the dataset?
     # tf.debugging.check_numerics(
     #    loss, "nan-loss"
     # )
@@ -91,7 +93,7 @@ def train_step(model, losses, optim, ims, flo):
     #    tf.debugging.check_numerics(
     #        g, "nan-grad@" + v.name
     #    )
-    # grads = [tf.where(tf.math.is_nan(g), tf.zeros_like(g), g) for g in grads]
+    grads = [tf.where(tf.math.is_nan(g), tf.zeros_like(g), g) for g in grads]
     optim.apply_gradients(zip(grads, model.trainable_variables))
     return optim.iterations, flow_losses, loss
 
@@ -128,7 +130,7 @@ def setup_input(batch_size, data_format):
     def _preprocess_fc3d(ims, flo):
         return preprocess(ims, flo, data_format, 0.56)
     dataset = (get_dataset_from_set()
-               .map(_preprocess_fc3d)
+               .map(_preprocess_fc3d, num_parallel_calls=tf.data.experimental.AUTOTUNE, deterministic=False)
                .batch(batch_size, drop_remainder=True)
                .prefetch(buffer_size=tf.data.experimental.AUTOTUNE))
 
@@ -226,7 +228,8 @@ def train_custom(model, losses, dataset, path, config):
         preprocess_no_op).batch(batch_size).take(1).cache().as_numpy_iterator())
 
     # Setup handlers for training/logging.
-    lr = learning_rate_cyclic(batch_size)
+    # lr = learning_rate_cyclic(batch_size)
+    lr = 1e-4  # learning_rate_cyclic(batch_size)
     optim = tf.keras.optimizers.Adam(learning_rate=lr)
     writer = tf.summary.create_file_writer(str(path['log']))
     ckpt = tf.train.Checkpoint(optimizer=optim, model=model)
@@ -234,7 +237,7 @@ def train_custom(model, losses, dataset, path, config):
         ckpt, str(path['ckpt']), max_to_keep=8)
 
     # Load from checkpoint.
-    # ckpt.restore(tf.train.latest_checkpoint('/tmp/pwc/run/017/ckpt/'))
+    ckpt.restore(tf.train.latest_checkpoint('/tmp/pwc/run/044/ckpt/'))
 
     # Iterate through train loop.
     for epoch in range(num_epoch):
@@ -245,6 +248,10 @@ def train_custom(model, losses, dataset, path, config):
 
         # train epoch.
         for ims, flo in dataset:
+            # Skip invalid inputs (unlikely but happens sometimes)
+            if not (tf.reduce_all(tf.math.is_finite(ims)) and tf.reduce_all(tf.math.is_finite(flo))):
+                continue
+
             opt_iter, flow_loss, step_loss = train_step(
                 model, losses, optim,  ims, flo)
 
@@ -286,8 +293,9 @@ def train_custom(model, losses, dataset, path, config):
 
                 with writer.as_default():
                     tf.summary.scalar('iter', opt_iter, step=opt_iter)
-                    tf.summary.scalar('learning_rate', lr(
-                        tf.cast(opt_iter, tf.float32)), step=opt_iter)
+                    tf.summary.scalar('learning_rate', lr, step=opt_iter)
+                    # tf.summary.scalar('learning_rate', lr(
+                    #    tf.cast(opt_iter, tf.float32)), step=opt_iter)
                     for k, v in metrics.items():
                         tf.summary.scalar(k, v.result(), step=opt_iter)
                     # will this work?
@@ -321,18 +329,28 @@ def main():
         except RuntimeError as e:
             print(e)
 
+    # Setup directory structure.
+    path = setup_path()
+    print('Run id = {}'.format(path['id']))
+
+    if False:
+        tf.debugging.enable_check_numerics()
+
+    # if True:
+    #    tf.debugging.experimental.enable_dump_debug_info(
+    #        logdir=path['run'] / 'debug'"/tmp/tfdbg2_logdir",
+    #        tensor_debug_mode="FULL_HEALTH",
+    #        circular_buffer_size=-1)
+
     dataset = setup_input(batch_size, data_format)
 
     model = build_network(train=True, data_format=data_format)
 
     # Create losses, flow mse
     # NOTE(yycho0108): The final output (result of bilinear interpolation) is not included.
-    losses = [FlowMseLoss(data_format=data_format) for o in model.outputs[:-1]]
-    # losses = [FlowMseLossFineTune(data_format=data_format) for o in model.outputs]
-
-    # Setup directory structure.
-    path = setup_path()
-    print('Run id = {}'.format(path['id']))
+    # losses = [FlowMseLoss(data_format=data_format) for o in model.outputs[:-1]]
+    losses = [FlowMseLossFineTune(data_format=data_format)
+              for o in model.outputs[:-1]]
 
     # Train.
     with open(path['run'] / 'config.txt', 'w') as f_cfg:

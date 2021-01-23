@@ -42,11 +42,11 @@ class FlowMseLoss(tf.keras.losses.Loss):
                 y_true_nhwc, tf.shape(y_pred)[2:4]) * scale
             y_true_down = tf.transpose(y_true_down_nhwc, (0, 3, 1, 2))
             # NOTE(yycho0108): 0.05 here effectively scales flow-related loss by 1/20x.
-            err_norm = tf.norm(0.05*(y_true_down - y_pred),
-                               ord=2, axis=self.axis)
-            loss = tf.reduce_mean(tf.reduce_sum(err_norm, axis=(1, 2)))
-            weight = 0.0003125 / (scale * scale)
-            return weight * loss
+            # err = tf.norm(0.05*(y_true_down - y_pred), ord=2, axis=self.axis)
+            # NOTE(yycho0108): delta=4.0 since search_range==4
+            loss = tf.reduce_mean(
+                tf.norm(y_true_down-y_pred, ord=2, axis=self.axis))
+            return loss
         elif self.data_format == 'channels_last':
             numer = tf.cast(tf.shape(y_pred)[1], tf.float32)
             denom = tf.cast(tf.shape(y_true)[1], tf.float32)
@@ -54,12 +54,17 @@ class FlowMseLoss(tf.keras.losses.Loss):
 
             y_true_down = tf.image.resize(
                 y_true, tf.shape(y_pred)[1:3]) * scale
+            # loss = tf.reduce_mean(tf.losses.huber(
+            #    y_true_down, y_pred, delta=4.0))
+            loss = tf.reduce_mean(
+                tf.norm(y_true_down - y_pred, ord=2, axis=self.axis))
+            return loss
             # NOTE(yycho0108): 0.05 here effectively scales flow-related loss by 1/20x.
-            err_norm = tf.norm(0.05*(y_true_down - y_pred),
-                               ord=2, axis=self.axis)
-            loss = tf.reduce_mean(tf.reduce_sum(err_norm, axis=(1, 2)))
-            weight = 0.0003125 / (scale * scale)
-            return weight * loss
+            # err = tf.norm(0.05*(y_true_down - y_pred),
+            #              ord=2, axis=self.axis)
+            #loss = tf.reduce_mean(tf.reduce_sum(err, axis=(1, 2)))
+            #weight = 0.0003125 / (scale * scale)
+            # return weight * loss
 
     def get_config(self):
         config = super().get_config().copy()
@@ -72,10 +77,13 @@ class FlowMseLoss(tf.keras.losses.Loss):
 
 
 class FlowMseLossFineTune(tf.keras.losses.Loss):
-    def __init__(self, q=0.4, eps=0.01, *args, **kwargs):
+    def __init__(self, data_format='channels_first', q=0.4, eps=0.01, *args, **kwargs):
+        self.data_format = data_format
+        self.axis = _get_axis(data_format)
         self.q = q
         self.eps = eps
         self.config_ = {
+            'data_format': data_format,
             'q': q,
             'eps': eps
         }
@@ -85,16 +93,26 @@ class FlowMseLossFineTune(tf.keras.losses.Loss):
         # if true=256, pred=8, scale=1/32
         # scale = tf.cast(y_pred.shape[1], tf.float32) / y_true.shape[1]
 
-        numer = tf.cast(tf.shape(y_pred)[1], tf.float32)
-        denom = tf.cast(tf.shape(y_true)[1], tf.float32)
-        scale = numer / denom
+        if self.data_format == 'channels_first':
+            numer = tf.cast(tf.shape(y_pred)[2], tf.float32)
+            denom = tf.cast(tf.shape(y_true)[2], tf.float32)
+            scale = numer / denom
 
-        y_true_down = tf.image.resize(y_true, tf.shape(y_pred)[1:3]) * scale
-        err_norm = tf.norm(y_true_down - y_pred, ord=1, axis=3)
+            y_true_nhwc = tf.transpose(y_true, (0, 2, 3, 1))
+            y_true_down_nhwc = tf.image.resize(
+                y_true_nhwc, tf.shape(y_pred)[2:4]) * scale
+            y_true_down = tf.transpose(y_true_down_nhwc, (0, 3, 1, 2))
+        elif self.data_format == 'channels_last':
+            numer = tf.cast(tf.shape(y_pred)[1], tf.float32)
+            denom = tf.cast(tf.shape(y_true)[1], tf.float32)
+            scale = numer / denom
+
+            y_true_down = tf.image.resize(
+                y_true, tf.shape(y_pred)[1:3]) * scale
+        err_norm = tf.norm(y_true_down - y_pred, ord=1, axis=self.axis)
         err_norm = tf.pow(err_norm + self.eps, self.q)
-        loss = tf.reduce_mean(tf.reduce_sum(err_norm, axis=(1, 2)))
-        weight = 0.0003125 / (scale * scale)
-        return weight * loss  # tf.pow(loss, 2)
+        loss = tf.reduce_mean(err_norm)
+        return loss  # scale * 10.0
 
     def get_config(self):
         config = super().get_config().copy()

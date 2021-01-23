@@ -37,17 +37,17 @@ def main():
     # model_file = '/tmp/pwc.076.hdf5'
     # model_file = '/tmp/pwc/run/012/ckpt/'
     # model_file = '/tmp/pwc/run/013/model.h5'
-    model_file = '/tmp/pwc/run/006/model.h5'
+    # model_file = '/tmp/pwc/run/006/model.h5'
     # model_file = '/tmp/pwc/run/007/model.h5'
+    model_file = '../../data/045/ckpt/'
     model = build_network(train=False)
 
     # restore
     if True:
         # from ckpt
-        ckpt = tf.train.Checkpoint(
-            optimizer=tf.keras.optimizers.Adam(), net=model)
+        ckpt = tf.train.Checkpoint(model=model)
         ckpt_mgr = tf.train.CheckpointManager(
-            ckpt, '/tmp/pwc/run/039/ckpt/', max_to_keep=8)
+            ckpt, '../../data/045/ckpt/', max_to_keep=8)
         ckpt.restore(ckpt_mgr.latest_checkpoint).expect_partial()
     else:
         # from hdf5
