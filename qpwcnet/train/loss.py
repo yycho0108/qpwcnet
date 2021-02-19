@@ -45,7 +45,7 @@ class FlowMseLoss(tf.keras.losses.Loss):
             # err = tf.norm(0.05*(y_true_down - y_pred), ord=2, axis=self.axis)
             # NOTE(yycho0108): delta=4.0 since search_range==4
             loss = tf.reduce_mean(
-                tf.norm(y_true_down-y_pred, ord=2, axis=self.axis))
+                tf.norm(y_true_down - y_pred, ord=2, axis=self.axis))
             return loss
         elif self.data_format == 'channels_last':
             numer = tf.cast(tf.shape(y_pred)[1], tf.float32)
@@ -77,7 +77,8 @@ class FlowMseLoss(tf.keras.losses.Loss):
 
 
 class FlowMseLossFineTune(tf.keras.losses.Loss):
-    def __init__(self, data_format='channels_first', q=0.4, eps=0.01, *args, **kwargs):
+    def __init__(self, data_format='channels_first',
+                 q=0.4, eps=0.01, *args, **kwargs):
         self.data_format = data_format
         self.axis = _get_axis(data_format)
         self.q = q
@@ -122,3 +123,25 @@ class FlowMseLossFineTune(tf.keras.losses.Loss):
     @classmethod
     def from_config(cls, config):
         return cls(**config)
+
+
+class AutoResizeMseLoss(tf.keras.losses.Loss):
+    def __init__(self, *args, **kwargs):
+        data_format = tf.keras.backend.image_data_format()
+        self.data_format = data_format
+        self.axis = _get_axis(data_format)
+        self.loss = tf.keras.losses.MeanSquaredError()
+        super().__init__(*args, **kwargs)
+
+    def call(self, y_true, y_pred):
+        if self.data_format == 'channels_first':
+            y_true_nhwc = tf.transpose(y_true, (0, 2, 3, 1))
+            y_true_down_nhwc = tf.image.resize(
+                y_true_nhwc, tf.shape(y_pred)[2:4])
+            y_true_down = tf.transpose(y_true_down_nhwc, (0, 3, 1, 2))
+            loss = self.loss(y_true_down, y_pred)
+            return loss
+        elif self.data_format == 'channels_last':
+            y_true_down = tf.image.resize(y_true, tf.shape(y_pred)[1:3])
+            loss = self.loss(y_true_down, y_pred)
+            return loss

@@ -3,7 +3,7 @@
 import numpy as np
 from pathlib import Path
 import tensorflow as tf
-from qpwcnet.core.pwcnet import build_network
+from qpwcnet.core.pwcnet import build_network, build_interpolator
 
 
 @tf.function
@@ -20,7 +20,8 @@ def main():
     log_dir = '/tmp/pwc/'
 
     # Build network.
-    model = build_network()
+    # model = build_network()
+    model = build_interpolator(input_shape=(256, 512))
     if show_summary:
         model.summary()
 
