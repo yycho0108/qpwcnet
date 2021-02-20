@@ -446,7 +446,7 @@ class FrameInterpolate(tf.keras.layers.Layer):
         else:
             prv, nxt, flo_01, flo_10, = inputs
 
-        # Applying half-scale flow is valid-ish, assuming constant depth etc.
+        # Applying half-scale flow is valid-ish.
         nxt_w = self.warp((nxt, 0.5 * flo_01))
         prv_w = self.warp((prv, 0.5 * flo_10))
 

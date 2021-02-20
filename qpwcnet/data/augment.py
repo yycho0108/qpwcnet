@@ -1,6 +1,63 @@
 #!/usr/bin/env python3
 
 import tensorflow as tf
+from tensorflow.python.framework import tensor_shape
+
+from typing import Tuple
+
+
+def rotation_matrix_from_euler(x: tf.Tensor):
+    c, s = tf.cos(x), tf.sin(x)
+    cx, cy, cz = tf.unstack(c, axis=-1)
+    sx, sy, sz = tf.unstack(s, axis=-1)
+
+    R = [cy * cz,
+         (sx * sy * cz) - (cx * sz),
+         (cx * sy * cz) + (sx * sz),
+         cy * sz,
+         (sx * sy * sz) + (cx * cz),
+         (cx * sy * sz) - (sx * cz),
+         -sy,
+         sx * cy,
+         cx * cy]
+
+    shape = tf.concat([tf.shape(x)[:-1], (3, 3)], axis=0)
+    R = tf.reshape(tf.stack(R, axis=-1), shape)
+    return R
+
+
+def restore_shape(t0: tf.Tensor, t1: tf.Tensor):
+    shape = t0.get_shape()
+    if shape == tensor_shape.unknown_shape():
+        t1.set_shape([None, None, None])
+    else:
+        t1.set_shape(shape)
+    return t1
+
+
+def photometric_augmentation(
+        image: tf.Tensor, z_shape: Tuple[int],
+        max_txn: float = 0.3,
+        max_rxn: float = 0.3,
+        max_scale: float = 0.3):
+    """
+    NOTE(ycho): max_scale is specified in log space.
+    NOTE(ycho): len(z_shape) == rank(image)
+    """
+
+    # Generate random variables.
+    z_txn = tf.random.uniform(z_shape + (3,), minval=-max_txn, maxval=+max_txn)
+    z_rxn = tf.random.uniform(z_shape + (3,), minval=-max_rxn, maxval=+max_rxn)
+    z_scale = tf.exp(tf.random.uniform(
+        z_shape + (3,),
+        minval=-max_rxn, maxval=+max_rxn))
+
+    # Convert + apply
+    R = rotation_matrix_from_euler(z_rxn)
+    x = tf.einsum('...ab,...b->...a', R, image)
+    out = x * z_scale + z_txn
+    out = restore_shape(image, out)
+    return out
 
 
 def image_augment_colors(ims):
@@ -62,7 +119,11 @@ def image_scale_and_crop(ims, flo, crop_shape, base_scale=1.0):
     im_concat = tf.concat([ims, flo], axis=2)
     # TODO(yycho0108): Fix hardcoded 0.955/1.05.
     scale = tf.random.uniform(
-        [], minval=base_scale * 0.955, maxval=base_scale * 1.05, dtype=tf.float32, seed=None)
+        [],
+        minval=base_scale * 0.955,
+        maxval=base_scale * 1.05,
+        dtype=tf.float32,
+        seed=None)
     # scaled_shape = tf.cast(
     #    tf.cast(ims.shape[:2], tf.float32) * scale, tf.int32)
 
@@ -96,7 +157,9 @@ def image_resize(ims, flo, shape):
 def image_crop(ims, flo, crop_shape):
     im_concat = tf.concat([ims, flo], axis=2)
     im_cropped = tf.image.random_crop(
-        im_concat, [crop_shape[0], crop_shape[1], 8])  # RGB + RGB + UV = 8 channels
+        im_concat, [crop_shape[0],
+                    crop_shape[1],
+                    8])  # RGB + RGB + UV = 8 channels
     ims = im_cropped[:, :, :6]
     flo = im_cropped[:, :, 6:]
     return ims, flo

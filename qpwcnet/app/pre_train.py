@@ -9,6 +9,7 @@ from pathlib import Path
 import json
 
 from qpwcnet.data.youtube_vos import YoutubeVos, YoutubeVosSettings, triplet_dataset
+from qpwcnet.data.augment import image_augment
 from qpwcnet.core.pwcnet import build_interpolator
 from qpwcnet.core.layers import _get_axis
 from qpwcnet.core.agc import adaptive_clip_grad

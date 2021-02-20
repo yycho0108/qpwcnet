@@ -6,15 +6,19 @@ import json
 import tqdm
 from typing import List, Generator, Tuple
 from functools import wraps, partial
-
+from collections import OrderedDict
+import cv2
 import numpy as np
 import tensorflow as tf
 import tensorflow_io as tfio
 
-import cv2
+
+from qpwcnet.data.augment import photometric_augmentation, restore_shape
+
+json_load = partial(json.load, object_pairs_hook=OrderedDict)
 
 
-def file_cache(name_fn, load_fn=json.load,
+def file_cache(name_fn, load_fn=json_load,
                dump_fn=json.dump, binary: bool = True):
     """ Decorator for caching a result from a function to a file. """
     def call_or_load(compute):
@@ -64,11 +68,11 @@ class YoutubeVos():
         self.metadata_ = self._load_metadata()
 
     @file_cache(_get_cache_filename, binary=False)
-    def _load_metadata(self):
+    def _load_metadata(self) -> OrderedDict:
         settings = self.settings
-        # Build metadata.
-        metadata = {}
-        for d in tqdm.tqdm(self.dir_.iterdir()):
+        # Build metadata ... try to preserve order.
+        metadata = OrderedDict()
+        for d in tqdm.tqdm(sorted(self.dir_.iterdir())):
             num_frames = len(list(d.glob('*.{}'.format(settings.img_ext))))
             metadata[d.name] = {'num_frames': num_frames}
 
@@ -149,11 +153,49 @@ def read_and_resize(img: tf.string, dsize: Tuple[int, int]):
     return img
 
 
+def augment_triplet(a: tf.Tensor, b: tf.Tensor, c: tf.Tensor,
+                    dsize: Tuple[int, int],
+                    batch_size: int = None, *args, **kwargs):
+    x = tf.stack([a, b, c], axis=0)  # 3,{NHWC, NCHW}
+
+    # 1) equal...
+    if batch_size is None:
+        y = photometric_augmentation(x, z_shape=(1, 1, 1),
+                                     *args, **kwargs)
+    else:
+        # each element of batch must be varied differently.
+        y = photometric_augmentation(x, z_shape=(1, batch_size, 1, 1),
+                                     *args, **kwargs)
+
+    # Additive gaussian noise
+    d0 = () if (batch_size is None) else (batch_size,)
+    shape = (1,) + d0 + dsize + (3,)
+    y = y + tf.random.normal(shape, 0.0, 0.02)
+
+    # FLIP LR/UD
+    y0 = y
+    for axis in [-3, -2]:
+        if batch_size is not None:
+            z = tf.random.uniform(
+                [1, batch_size, 1, 1, 1],
+                0, 1.0, dtype=tf.float32)
+        else:
+            z = tf.random.uniform(
+                [1, 1, 1, 1],
+                0, 1.0, dtype=tf.float32)
+        flip = tf.less(z, 0.5)
+        y = tf.where(flip, tf.reverse(y, axis=[axis]), y)
+    y = restore_shape(y0, y)
+
+    return tf.unstack(y, axis=0)
+
+
 def triplet_dataset(dataset: YoutubeVos,
                     dsize: Tuple[int, int],
                     batch_size: int = None,
                     shuffle: bool = True,
-                    prefetch: bool = True
+                    augment: bool = True,
+                    prefetch: bool = True,
                     ):
     # triplet filenames
     d = as_tf_dataset(dataset, max_gap=0)
@@ -170,6 +212,10 @@ def triplet_dataset(dataset: YoutubeVos,
     # batch
     if batch_size is not None:
         d = d.batch(batch_size)
+
+    if augment:
+        aug_fun = partial(augment_triplet, dsize=dsize, batch_size=batch_size)
+        d = d.map(aug_fun, num_parallel_calls=tf.data.experimental.AUTOTUNE)
 
     # prefetch
     if prefetch:
@@ -191,8 +237,9 @@ def main():
         cv2.imshow('i0', i0)
         cv2.imshow('i1', i1)
         cv2.imshow('i2', i2)
-        cv2.waitKey(0)
-        break
+        k = cv2.waitKey(0)
+        if k in [27, ord('q')]:
+            break
 
 
 if __name__ == '__main__':

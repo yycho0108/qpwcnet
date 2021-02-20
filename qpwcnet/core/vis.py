@@ -8,7 +8,7 @@ def flow_to_image(flow, data_format='channels_last'):
     if data_format == 'channels_last':
         axis = -1
     else:
-        axis = 1
+        axis = -3
 
     # Map flow direction to hue.
     if data_format == 'channels_last':
@@ -23,12 +23,19 @@ def flow_to_image(flow, data_format='channels_last'):
     # Map flow magnitude to saturation.
     # TODO(yycho0108): Potentially treat NaNs here?
     flo_mag = tf.norm(flow, axis=axis)  # ...HW
-    smax = tf.reduce_max(flo_mag, axis=(-2, -1), keepdims=True)
+    print(flo_mag.shape) # 2,256
+
+    smax = tf.reduce_max(flo_mag, axis=(-2, -1), keepdims=True)  # N11
+
     eps = tf.constant(1e-6)
     s = flo_mag / (smax + eps)
 
     # Value is always one.
     v = tf.ones_like(h)
+
+    print(h.shape)
+    print(s.shape)
+    print(v.shape)
 
     # NOTE(yycho0108): hsv axis here needs to be the last dimension.
     hsv = tf.stack([h, s, v], axis=-1)
