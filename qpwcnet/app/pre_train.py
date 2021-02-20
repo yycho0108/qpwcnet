@@ -22,13 +22,13 @@ class Settings(Serializable):
     num_epoch: int = 600
     update_freq: int = 16
     data_format: str = 'channels_first'
-    allow_memory_growth: bool = True
+    allow_memory_growth: bool = False
     debug_nan: bool = False
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 1.0e-4
     input_shape: Tuple[int, int] = (256, 512)
 
 
-class TrainAgcModel(tf.keras.Model):
+class TrainModel(tf.keras.Model):
     def __init__(self, model: tf.keras.Model,
                  clip_factor: float = 0.01, eps: float = 1e-3):
         super().__init__(model.inputs, model.outputs)
@@ -39,13 +39,12 @@ class TrainAgcModel(tf.keras.Model):
         self.axis = _get_axis(data_format)
 
     def train_step(self, data):
-        img0, img1, img2 = data
-        img_pair = tf.concat([img0, img2], axis=self.axis)
+        img_pair, img1 = data
         with tf.GradientTape() as tape:
-            pred_imgs = self.model(img_pair)
+            pred_imgs = self.model(img_pair, training=True)
             loss = self.compiled_loss(
-                [img1 for _ in pred_imgs],  # label
-                pred_imgs,  # prediction
+                [img1 for _ in pred_imgs],  # label(s)
+                pred_imgs,  # prediction(s)
                 regularization_losses=self.losses)
 
         params = self.model.trainable_variables
@@ -54,8 +53,8 @@ class TrainAgcModel(tf.keras.Model):
         # AGC == freedom from batchnorm?
         agc_grads = adaptive_clip_grad(
             params, grads, self.clip_factor, self.eps)
-
         self.optimizer.apply_gradients(zip(agc_grads, params))
+        # self.optimizer.apply_gradients(zip(grads, params))
         self.compiled_metrics.update_state(img1, pred_imgs[-1])
         return {m.name: m.result() for m in self.metrics}
 
@@ -92,12 +91,27 @@ def setup_path(root='/tmp/pwc'):
     return path
 
 
+def preprocess(img0, img1, img2):
+    # Normalize to (-0.5, 0.5) + concat pairs
+    img0 -= 0.5
+    img1 -= 0.5
+    img2 -= 0.5
+    img_pair = tf.concat([img0, img2], axis=-1)
+
+    # Deal with data format.
+    data_format = tf.keras.backend.image_data_format()
+    if data_format == 'channels_first':
+        img_pair = tf.transpose(img_pair, (0, 3, 1, 2))
+        img1 = tf.transpose(img1, (0, 3, 1, 2))
+    return (img_pair, img1)
+
+
 def train(args: Settings, model: tf.keras.Model,
           dataset: tf.data.Dataset, path):
     callbacks = [
         # tf.keras.callbacks.EarlyStopping(patience=2),
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=str(path['ckpt'] / '{epoch:03d}.hdf5')),
+            filepath=str(path['ckpt'] / '{epoch:03d}.pb')),  # TODO(ycho): h5 better or pb?
         tf.keras.callbacks.TensorBoard(
             update_freq=args.update_freq,  # every 128 batches
             log_dir=path['log'], profile_batch='2,66'),
@@ -114,11 +128,13 @@ def train(args: Settings, model: tf.keras.Model,
     model.fit(dataset,
               epochs=args.num_epoch,
               callbacks=callbacks)
-    model.save_weights(str(path['run'] / 'model.h5'))
+    model.save_weights(str(path['run'] / 'model.pb'), save_format='tf')
 
 
 @with_args(Settings)
 def main(args):
+    # global data format setting
+    tf.keras.backend.set_image_data_format(args.data_format)
 
     # Configure memory growth.
     if args.allow_memory_growth:
@@ -141,9 +157,10 @@ def main(args):
         dataset,
         dsize=args.input_shape,
         batch_size=args.batch_size)
+    dataset = dataset.map(preprocess)
 
     model = build_interpolator(args.input_shape)
-    train_model = TrainAgcModel(model)
+    train_model = TrainModel(model)
 
     # Save cfg
     with open(path['run'] / 'config.json', 'w') as f_cfg:

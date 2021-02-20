@@ -6,8 +6,10 @@ import tensorflow_addons as tfa
 from qpwcnet.core.warp import get_pixel_value
 from qpwcnet.core.mish import Mish
 
+from typing import Tuple
 
-gamma = 0.0004
+
+gamma = 0.00004
 
 
 def lrelu(x):
@@ -37,10 +39,11 @@ def _get_axis(data_format: str):
 
 class CostVolume(tf.keras.layers.Layer):
     def __init__(
-            self, search_range=4, data_format='channels_first', *args, **
+            self, search_range=4, *args, **
             kwargs):
+        data_format = tf.keras.backend.image_data_format()
+
         self._config = {
-            'data_format': data_format,
             'search_range': search_range
         }
         self.search_range = search_range
@@ -113,11 +116,11 @@ class CostVolumeV2(tf.keras.layers.Layer):
     """
 
     def __init__(
-            self, search_range=4, data_format='channels_first', *args, **
+            self, search_range=4, *args, **
             kwargs):
+        data_format = tf.keras.backend.image_data_format()
         self._config = {
             'search_range': search_range,
-            'data_format': data_format
         }
         self.search_range = search_range
         self.corr = tfa.layers.optical_flow.CorrelationCost(
@@ -141,11 +144,8 @@ class CostVolumeV2(tf.keras.layers.Layer):
 
 
 class Warp(tf.keras.layers.Layer):
-
-    def __init__(self, data_format='channels_first', *args, **kwargs):
-        self._config = {
-            'data_format': data_format
-        }
+    def __init__(self, *args, **kwargs):
+        data_format = tf.keras.backend.image_data_format()
         self.data_format = data_format
         self.axis = _get_axis(data_format)
         self.h = None
@@ -237,21 +237,10 @@ class Warp(tf.keras.layers.Layer):
 
         return out
 
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
-
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
 
 class WarpV2(tf.keras.layers.Layer):
-    def __init__(self, data_format='channels_first', *args, **kwargs):
-        self._config = {
-            'data_format': data_format
-        }
+    def __init__(self, *args, **kwargs):
+        data_format = tf.keras.backend.image_data_format()
         self.data_format = data_format
         super().__init__(*args, **kwargs)
 
@@ -265,15 +254,6 @@ class WarpV2(tf.keras.layers.Layer):
         else:
             out = tfa.image.dense_image_warp(img, -flo[..., ::-1])
         return out
-
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
-
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
 
 
 class ContextLayer(tf.keras.layers.Layer):
@@ -343,20 +323,24 @@ class Upsample(tf.keras.layers.Layer):
 
 
 class UpConv(tf.keras.layers.Layer):
-    def __init__(self, filters, data_format, *args, **kwargs):
+    def __init__(self, filters: int, *args, **kwargs):
+        data_format = tf.keras.backend.image_data_format()
         self._config = {
             'filters': filters,
-            'data_format': data_format
         }
-        self.conv = tf.keras.layers.Conv2DTranspose(
+
+        axis = _get_axis(data_format)
+        # self.norm = tf.keras.layers.BatchNormalization(axis=axis)
+        self.conv_up = tf.keras.layers.Conv2DTranspose(
             filters=filters, kernel_size=4, strides=2, padding='same',
-            activation=None,
+            activation='Mish',
             kernel_regularizer=tf.keras.regularizers.l2(gamma),
             data_format=data_format)
         super().__init__(*args, **kwargs)
 
-    def call(self, x):
-        return tf.constant(2, dtype=tf.float32) * self.conv(x)
+    def call(self, x, training=None):
+        return self.conv_up(x)
+        # return self.norm(self.conv_up(x), training=training)
 
     def get_config(self):
         config = super().get_config().copy()
@@ -369,46 +353,70 @@ class UpConv(tf.keras.layers.Layer):
 
 
 class OptFlow(tf.keras.layers.Layer):
-    filters = [128, 64, 32, 16, 8, 2]
-
-    def __init__(self, *args, **kwargs):
+    def __init__(self, filters: Tuple[int, ...] = (
+            128, 64, 32, 16), *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
-        self.flow = []
-        for i, f in enumerate(self.filters):
-            is_flow = (i == (len(self.filters) - 1))
-            activation = None if is_flow else 'Mish'
-            use_bias = False if is_flow else True
+        self.data_format = data_format
+        axis = _get_axis(data_format)
+
+        self._config = {
+            'filters': filters
+        }
+
+        # Intermediate Features ...
+        self.feat = []
+        for f in filters:
             conv = tf.keras.layers.SeparableConv2D(
-                filters=f, kernel_size=3, strides=1, padding='same', activation=activation,
-                use_bias=use_bias,
-                # depthwise_regularizer=tf.keras.regularizers.l2(gamma),
-                # pointwise_regularizer=tf.keras.regularizers.l2(gamma),
-                data_format=data_format
-            )
-            # conv = tf.keras.layers.Conv2D(
-            # filters=f, kernel_size=3, strides=1, padding='same',
-            # activation=activation)
-            self.flow.append(conv)
+                filters=f, kernel_size=3, strides=1, padding='same',
+                activation='Mish', use_bias=True, data_format=data_format)
+            self.feat.append(conv)
+
+        # Normalize right before computing the flow.
+        self.norm = tf.keras.layers.BatchNormalization(axis=axis)
+
+        # Final flow with free scale
+        self.flow = tf.keras.layers.Conv2D(
+            filters=2,
+            kernel_size=3,  # ?
+            strides=1,
+            padding='same',
+            activation=None,
+            use_bias=False,
+            data_format=data_format
+        )
+        # flow scale should be normalized wrt input shape
+        self.scale = 1.0
         super().__init__(*args, **kwargs)
 
-    # def build(self, input_shapes):
-    #    shape = input_shapes[0]
-    #    if self.data_format == 'channels_first':
-    #        self.h = shape[2]
-    #        self.w = shape[3]
-    #    elif self.data_format == 'channels_last':
-    #        self.h = shape[1]
-    #        self.w = shape[2]
-    #    else:
-    #        raise ValueError(
-    #            'Unsupported data format : {}'.format(self.data_format))
-    #    super().build(input_shapes)
+    def build(self, input_shape):
+        shape = input_shape
+        if self.data_format == 'channels_first':
+            # NCHW -> 2,3
+            h, w = shape[2], shape[3]
+        elif self.data_format == 'channels_last':
+            # NHWC -> 1,2
+            h, w = shape[1], shape[2]
+        else:
+            raise ValueError(
+                'Unsupported data format : {}'.format(data_format))
+        self.scale = (float(h)**2 + float(w**2)) ** 0.5
+        super().build(input_shape)
 
-    def call(self, inputs):
+    def call(self, inputs, training=None):
         x = inputs
-        for f in self.flow:
-            x = f(x)
+        for conv in self.feat:
+            x = conv(x)
+        x = self.scale * self.flow(self.norm(x, training=training))
         return x
+
+    def get_config(self):
+        config = super().get_config().copy()
+        config.update(self._config)
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
 
 
 class FrameInterpolate(tf.keras.layers.Layer):
@@ -419,7 +427,7 @@ class FrameInterpolate(tf.keras.layers.Layer):
         data_format = tf.keras.backend.image_data_format()
         self.up = up
         self.axis = _get_axis(data_format)
-        self.warp = WarpV2(data_format=data_format)
+        self.warp = WarpV2()
         self.conv1 = tf.keras.layers.SeparableConv2D(
             filters=64, kernel_size=3, strides=1, padding='same',
             activation='Mish', use_bias=True, data_format=data_format)
@@ -469,8 +477,8 @@ class Flow(tf.keras.layers.Layer):
         data_format = tf.keras.backend.image_data_format()
         self.flow = OptFlow()
         self.axis = _get_axis(data_format)
-        # self.cost_volume = CostVolume(data_format=data_format)
-        self.cost_volume = CostVolumeV2(data_format=data_format)
+        # self.cost_volume = CostVolume()
+        self.cost_volume = CostVolumeV2()
 
         super().__init__(*args, **kwargs)
 
@@ -492,10 +500,10 @@ class UpFlow(tf.keras.layers.Layer):
     def __init__(self, *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
         self.flow = OptFlow()
-        # self.warp = Warp(data_format=data_format)
-        self.warp = WarpV2(data_format=data_format)
-        # self.cost_volume = CostVolume(data_format=data_format)
-        self.cost_volume = CostVolumeV2(data_format=data_format)
+        # self.warp = Warp()
+        self.warp = WarpV2()
+        # self.cost_volume = CostVolume()
+        self.cost_volume = CostVolumeV2()
         self.axis = _get_axis(data_format)
         super().__init__(*args, **kwargs)
 
@@ -528,6 +536,8 @@ class DownConv(tf.keras.layers.Layer):
                  use_normalizer: bool = True,
                  *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
+        axis = _get_axis(data_format)
+
         self._config = {
             'num_filters': num_filters,
             'use_normalizer': use_normalizer
@@ -562,11 +572,14 @@ class DownConv(tf.keras.layers.Layer):
             padding='same',
             kernel_regularizer=tf.keras.regularizers.l2(gamma),
             data_format=data_format)
-        axis = _get_axis(data_format)
+
         if self.use_normalizer:
-            self.norm_a = tfa.layers.GroupNormalization(groups=4, axis=axis)
-            self.norm_aa = tfa.layers.GroupNormalization(groups=4, axis=axis)
-            self.norm_b = tfa.layers.GroupNormalization(groups=4, axis=axis)
+            self.norm_a = tf.keras.layers.BatchNormalization(axis=axis)
+            self.norm_aa = tf.keras.layers.BatchNormalization(axis=axis)
+            self.norm_b = tf.keras.layers.BatchNormalization(axis=axis)
+            #self.norm_a = tfa.layers.GroupNormalization(groups=4, axis=axis)
+            #self.norm_aa = tfa.layers.GroupNormalization(groups=4, axis=axis)
+            #self.norm_b = tfa.layers.GroupNormalization(groups=4, axis=axis)
 
         super().__init__(*args, **kwargs)
 

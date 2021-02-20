@@ -4,6 +4,7 @@ import os
 import sys
 import numpy as np
 import tensorflow as tf
+import tensorflow_addons as tfa
 
 from qpwcnet.core.pwcnet import build_network, build_interpolator
 from qpwcnet.train.loss import FlowMseLoss, AutoResizeMseLoss

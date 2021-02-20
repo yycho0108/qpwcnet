@@ -17,7 +17,7 @@ def main():
     show_tensorboard_graph = True
 
     # Setup logging directory.
-    log_dir = '/tmp/pwc/'
+    log_dir = '/tmp/pwc/graph/'
 
     # Build network.
     # model = build_network()
@@ -38,7 +38,7 @@ def main():
     if show_tensorboard_graph:
         # Prepare summary writer for tensorboard graph visualization.
         Path(log_dir).mkdir(parents=True, exist_ok=True)
-        writer = tf.summary.create_file_writer('/tmp/pwc/')
+        writer = tf.summary.create_file_writer(log_dir)
 
         # Create and run through dummy data.
         dummy_inputs = []

@@ -146,13 +146,11 @@ def read_and_resize(img: tf.string, dsize: Tuple[int, int]):
     img = tf.io.decode_image(img, expand_animations=False)
     img = tf.image.convert_image_dtype(img, tf.float32)
     img = tf.image.resize(img, dsize)
-    # normalize to -0.5~0.5
-    img -= 0.5
     return img
 
 
 def triplet_dataset(dataset: YoutubeVos,
-                    dsize: Tuple[int, int] = (256, 256),
+                    dsize: Tuple[int, int],
                     batch_size: int = None,
                     shuffle: bool = True,
                     prefetch: bool = True
@@ -187,7 +185,7 @@ def main():
     #for img in imgs:
     #    print(img)
     #print(len(dataset.metadata))
-    d = triplet_dataset(dataset)
+    d = triplet_dataset(dataset, dsize=(256, 512))
     for img0, img1, img2 in d:
         i0, i1, i2 = img0.numpy(), img1.numpy(), img2.numpy()
         cv2.imshow('i0', i0)

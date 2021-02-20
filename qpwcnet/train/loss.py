@@ -135,6 +135,7 @@ class AutoResizeMseLoss(tf.keras.losses.Loss):
 
     def call(self, y_true, y_pred):
         if self.data_format == 'channels_first':
+            # both y_true and y_pred are NCHW
             y_true_nhwc = tf.transpose(y_true, (0, 2, 3, 1))
             y_true_down_nhwc = tf.image.resize(
                 y_true_nhwc, tf.shape(y_pred)[2:4])
