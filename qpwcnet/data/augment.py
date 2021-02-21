@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
 import tensorflow as tf
-from tensorflow.python.framework import tensor_shape
+import einops
 
+from tensorflow.python.framework import tensor_shape
 from typing import Tuple
 
 
@@ -20,9 +21,7 @@ def rotation_matrix_from_euler(x: tf.Tensor):
          -sy,
          sx * cy,
          cx * cy]
-
-    shape = tf.concat([tf.shape(x)[:-1], (3, 3)], axis=0)
-    R = tf.reshape(tf.stack(R, axis=-1), shape)
+    R = einops.rearrange(R, '(b c) ... -> ... b c', b=3, c=3)
     return R
 
 
@@ -50,7 +49,7 @@ def photometric_augmentation(
     z_rxn = tf.random.uniform(z_shape + (3,), minval=-max_rxn, maxval=+max_rxn)
     z_scale = tf.exp(tf.random.uniform(
         z_shape + (3,),
-        minval=-max_rxn, maxval=+max_rxn))
+        minval=-max_scale, maxval=+max_scale))
 
     # Convert + apply
     R = rotation_matrix_from_euler(z_rxn)

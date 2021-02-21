@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import tensorflow as tf
+import tensorflow_addons as tfa
 from dataclasses import dataclass
 from simple_parsing import Serializable
 from qpwcnet.app.arg_setup import with_args
@@ -8,7 +9,12 @@ from typing import Tuple
 from pathlib import Path
 import json
 
-from qpwcnet.data.youtube_vos import YoutubeVos, YoutubeVosSettings, triplet_dataset
+from qpwcnet.data.youtube_vos import (YoutubeVosTriplet, YoutubeVosSettings,
+                                      YoutubeVosTripletSettings)
+from qpwcnet.data.vimeo_triplet import (
+    VimeoTriplet, VimeoTripletSettings)
+from qpwcnet.data.triplet_dataset_ops import read_triplet_dataset
+
 from qpwcnet.data.augment import image_augment
 from qpwcnet.core.pwcnet import build_interpolator
 from qpwcnet.core.layers import _get_axis
@@ -27,6 +33,8 @@ class Settings(Serializable):
     debug_nan: bool = False
     learning_rate: float = 1.0e-4
     input_shape: Tuple[int, int] = (256, 512)
+    load_ckpt: str = ''
+    dataset: str = 'vimeo'
 
 
 class TrainModel(tf.keras.Model):
@@ -60,7 +68,10 @@ class TrainModel(tf.keras.Model):
         return {m.name: m.result() for m in self.metrics}
 
     def save_weights(self, *args, **kwargs):
-        self.model.save_weights(*args, **kwargs)
+        return self.model.save_weights(*args, **kwargs)
+
+    def load_weights(self, *args, **kwargs):
+        return self.model.load_weights(*args, **kwargs)
 
     def call(self, inputs, *args, **kwargs):
         return self.model(inputs, *args, **kwargs)
@@ -112,7 +123,7 @@ def train(args: Settings, model: tf.keras.Model,
     callbacks = [
         # tf.keras.callbacks.EarlyStopping(patience=2),
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=str(path['ckpt'] / '{epoch:03d}.pb')),  # TODO(ycho): h5 better or pb?
+            filepath=str(path['ckpt'] / '{epoch:03d}.ckpt')),
         tf.keras.callbacks.TensorBoard(
             update_freq=args.update_freq,  # every 128 batches
             log_dir=path['log'], profile_batch='2,66'),
@@ -126,10 +137,20 @@ def train(args: Settings, model: tf.keras.Model,
         # metrics=[tf.keras.metrics.MeanSquaredError()]
     )
 
-    model.fit(dataset,
-              epochs=args.num_epoch,
-              callbacks=callbacks)
-    model.save_weights(str(path['run'] / 'model.pb'), save_format='tf')
+    if args.load_ckpt:
+        weight_path = Path(args.load_ckpt) / 'variables/variables'
+        model.load_weights(weight_path,
+                           by_name=False)
+
+    try:
+        model.fit(dataset,
+                  epochs=args.num_epoch,
+                  callbacks=callbacks)
+    except KeyboardInterrupt as e:
+        out_file = str(path['run'] / 'model.pb')
+        logging.info(
+            'saving weights to {} prior to termination ...'.format(out_file))
+        model.save_weights(out_file, save_format='tf')
 
 
 @with_args(Settings)
@@ -153,14 +174,23 @@ def main(args):
     if args.debug_nan:
         tf.debugging.enable_check_numerics()
 
-    dataset = YoutubeVos(YoutubeVosSettings(data_type='train'))
-    dataset = triplet_dataset(
-        dataset,
-        dsize=args.input_shape,
-        batch_size=args.batch_size)
+    # Select dataset.
+    if args.dataset == 'ytvos':
+        dataset = YoutubeVos(YoutubeVosSettings(data_type='train'))
+    elif args.dataset == 'vimeo':
+        dataset = VimeoTriplet(VimeoTripletSettings(data_type='train'))
+    else:
+        raise ValueError('Invalid dataset = {}'.format(args.dataset))
+
+    # TripletDataset -> tf.data.Dataset
+    dataset = read_triplet_dataset(dataset, dsize=args.input_shape,
+                                   batch_size=args.batch_size)
+
+    # Preprocess = Normalize + transpose
     dataset = dataset.map(preprocess)
 
     model = build_interpolator(args.input_shape)
+
     train_model = TrainModel(model)
 
     # Save cfg

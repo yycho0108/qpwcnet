@@ -87,8 +87,7 @@ def interpolator(img_prv, img_nxt,
     return imgs[-1]
 
 
-def encoder(img_prv, img_nxt, output_features: bool = False,
-            train: bool = True):
+def encoder(img_prv, img_nxt, output_features: bool = False):
     """
     Feature computation encoder.
     Assumes inputs is a pair of images that has been

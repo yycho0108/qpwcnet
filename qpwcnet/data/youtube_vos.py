@@ -11,43 +11,18 @@ import cv2
 import numpy as np
 import tensorflow as tf
 import tensorflow_io as tfio
+import einops
 
-
+from qpwcnet.core.util import file_cache
 from qpwcnet.data.augment import photometric_augmentation, restore_shape
-
-json_load = partial(json.load, object_pairs_hook=OrderedDict)
-
-
-def file_cache(name_fn, load_fn=json_load,
-               dump_fn=json.dump, binary: bool = True):
-    """ Decorator for caching a result from a function to a file. """
-    def call_or_load(compute):
-        def wrapper(*args, **kwargs):
-            filename = name_fn(compute, *args, **kwargs)
-            cache_file = Path(filename)
-            # Compute if non-existent.
-            if not cache_file.exists():
-                # Ensure directory exists.
-                Path(filename).parent.mkdir(parents=True, exist_ok=True)
-                result = compute(*args, **kwargs)
-                mode = 'wb' if binary else 'w'
-                with open(filename, mode) as f:
-                    dump_fn(result, f)
-                return result
-
-            # O.W. Return from cache.
-            mode = 'rb' if binary else 'r'
-            with open(filename, mode) as f:
-                return load_fn(f)
-
-        return wrapper
-    return call_or_load
+from qpwcnet.data.triplet_dataset import TripletDataset
+from qpwcnet.data.triplet_dataset_ops import read_triplet_dataset, show_triplet_dataset
 
 
 def _get_cache_filename(method, self: 'YoutubeVos', *args, **kwargs):
-    # assert(method == YoutubeVos._load_metadata)
+    # print('method = {}'.format(method.__qualname__))
     metadata_file = (Path(self.cache_dir).expanduser() /
-                     '{}-metadata.json'.format(self.data_type))
+                     '{}-{}.json'.format(self.data_type, method.__qualname__))
     return metadata_file
 
 
@@ -75,7 +50,6 @@ class YoutubeVos():
         for d in tqdm.tqdm(sorted(self.dir_.iterdir())):
             num_frames = len(list(d.glob('*.{}'.format(settings.img_ext))))
             metadata[d.name] = {'num_frames': num_frames}
-
         return metadata
 
     def __len__(self):
@@ -116,14 +90,43 @@ class YoutubeVos():
         return self.metadata_
 
 
-def as_generator(dataset: YoutubeVos, max_gap=0):
-    for k, v in dataset.metadata.items():
+@dataclass
+class YoutubeVosTripletSettings:
+    dataset: YoutubeVosSettings = YoutubeVosSettings()
+    max_gap: int = 0
+
+
+class YoutubeVosTriplet(TripletDataset):
+    """
+    Triplet wrapper around YoutubeVos.
+    I guess - technically, this is a generic wrapper around `VideoDataset`.
+    """
+
+    def __init__(self, cfg: YoutubeVosTripletSettings):
+        self.cfg = cfg
+        self.dataset = YoutubeVos(cfg.dataset)
+
+    def __iter__(self) -> Tuple[str, str, str]:
+        """
+        Return a triplet of filenames corresponding to sequential frames.
+        """
+        for key in self.keys:
+            try:
+                yield self[key]
+            except ValueError as e:
+                continue
+
+    def __getitem__(self, key: str) -> Tuple[str, str, str]:
+        """ Get a triplet corresponding to a key """
+        v = self.dataset.metadata[key]
         n = v['num_frames']
 
         # Max temporal displacement
-        dmax = min((n - 3) // 2, max_gap)
+        dmax = min((n - 3) // 2, self.cfg.max_gap)
         if dmax < 0:
-            continue
+            raise ValueError(
+                'Unable to satisfy max_gap criterion : {} <= {} < 0' .format(
+                    dmax, self.cfg.max_gap))
 
         # displacement = 1 + gap
         d = np.random.randint(1, dmax + 2)
@@ -134,112 +137,30 @@ def as_generator(dataset: YoutubeVos, max_gap=0):
         i2 = i1 + d
 
         # Map to filenames.
-        fs = list(dataset.get_imgs(k))
+        fs = list(self.dataset.get_imgs(key))
         out = (str(fs[i0]), str(fs[i1]), str(fs[i2]))
-        yield out
+        return out
 
+    def __len__(self) -> int:
+        """ Length of dataset """
+        return len(self.dataset)
 
-def as_tf_dataset(dataset: YoutubeVos, *args, **kwargs) -> tf.data.Dataset:
-    return tf.data.Dataset.from_generator(
-        lambda: as_generator(dataset, *args, **kwargs),
-        (tf.string, tf.string, tf.string))
-
-
-def read_and_resize(img: tf.string, dsize: Tuple[int, int]):
-    img = tf.io.read_file(img)
-    img = tf.io.decode_image(img, expand_animations=False)
-    img = tf.image.convert_image_dtype(img, tf.float32)
-    img = tf.image.resize(img, dsize)
-    return img
-
-
-def augment_triplet(a: tf.Tensor, b: tf.Tensor, c: tf.Tensor,
-                    dsize: Tuple[int, int],
-                    batch_size: int = None, *args, **kwargs):
-    x = tf.stack([a, b, c], axis=0)  # 3,{NHWC, NCHW}
-
-    # 1) equal...
-    if batch_size is None:
-        y = photometric_augmentation(x, z_shape=(1, 1, 1),
-                                     *args, **kwargs)
-    else:
-        # each element of batch must be varied differently.
-        y = photometric_augmentation(x, z_shape=(1, batch_size, 1, 1),
-                                     *args, **kwargs)
-
-    # Additive gaussian noise
-    d0 = () if (batch_size is None) else (batch_size,)
-    shape = (1,) + d0 + dsize + (3,)
-    y = y + tf.random.normal(shape, 0.0, 0.02)
-
-    # FLIP LR/UD
-    y0 = y
-    for axis in [-3, -2]:
-        if batch_size is not None:
-            z = tf.random.uniform(
-                [1, batch_size, 1, 1, 1],
-                0, 1.0, dtype=tf.float32)
-        else:
-            z = tf.random.uniform(
-                [1, 1, 1, 1],
-                0, 1.0, dtype=tf.float32)
-        flip = tf.less(z, 0.5)
-        y = tf.where(flip, tf.reverse(y, axis=[axis]), y)
-    y = restore_shape(y0, y)
-
-    return tf.unstack(y, axis=0)
-
-
-def triplet_dataset(dataset: YoutubeVos,
-                    dsize: Tuple[int, int],
-                    batch_size: int = None,
-                    shuffle: bool = True,
-                    augment: bool = True,
-                    prefetch: bool = True,
-                    ):
-    # triplet filenames
-    d = as_tf_dataset(dataset, max_gap=0)
-
-    # shuffle, etc.
-    if shuffle:
-        d = d.shuffle(buffer_size=len(dataset))
-
-    # triplet images
-    read_fn = partial(read_and_resize, dsize=dsize)
-    d = d.map(lambda a, b, c: (read_fn(a), read_fn(b), read_fn(c)),
-              num_parallel_calls=tf.data.experimental.AUTOTUNE)
-
-    # batch
-    if batch_size is not None:
-        d = d.batch(batch_size)
-
-    if augment:
-        aug_fun = partial(augment_triplet, dsize=dsize, batch_size=batch_size)
-        d = d.map(aug_fun, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-
-    # prefetch
-    if prefetch:
-        d = d.prefetch(tf.data.experimental.AUTOTUNE)
-
-    return d
+    @property
+    def keys(self) -> List[str]:
+        """ RAI keys """
+        return self.dataset.get_keys()
 
 
 def main():
-    dataset = YoutubeVos(YoutubeVosSettings(data_type='valid'))
-    #key = random.choice(list(dataset.get_keys()))
-    #imgs = dataset.get_imgs(key)
-    #for img in imgs:
-    #    print(img)
-    #print(len(dataset.metadata))
-    d = triplet_dataset(dataset, dsize=(256, 512))
-    for img0, img1, img2 in d:
-        i0, i1, i2 = img0.numpy(), img1.numpy(), img2.numpy()
-        cv2.imshow('i0', i0)
-        cv2.imshow('i1', i1)
-        cv2.imshow('i2', i2)
-        k = cv2.waitKey(0)
-        if k in [27, ord('q')]:
-            break
+    from qpwcnet.core.util import disable_gpu
+    from qpwcnet.data.triplet_dataset_ops import show_triplet_dataset
+
+    disable_gpu()
+    dataset = YoutubeVosTriplet(
+        YoutubeVosTripletSettings(
+            YoutubeVosSettings(
+                data_type='train')))
+    show_triplet_dataset(dataset)
 
 
 if __name__ == '__main__':
