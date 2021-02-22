@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 
-import tensorflow as tf
-import tensorflow_addons as tfa
 from dataclasses import dataclass
 from simple_parsing import Serializable
-from qpwcnet.app.arg_setup import with_args
 from typing import Tuple
 from pathlib import Path
 import json
+import logging
+
+import tensorflow as tf
+import tensorflow_addons as tfa
+import einops
+
+from qpwcnet.core.pwcnet import build_interpolator
+from qpwcnet.core.layers import _get_axis
+from qpwcnet.core.agc import adaptive_clip_grad
+from qpwcnet.train.loss import AutoResizeMseLoss
 
 from qpwcnet.data.youtube_vos import (YoutubeVosTriplet, YoutubeVosSettings,
                                       YoutubeVosTripletSettings)
@@ -15,11 +22,7 @@ from qpwcnet.data.vimeo_triplet import (
     VimeoTriplet, VimeoTripletSettings)
 from qpwcnet.data.triplet_dataset_ops import read_triplet_dataset
 
-from qpwcnet.data.augment import image_augment
-from qpwcnet.core.pwcnet import build_interpolator
-from qpwcnet.core.layers import _get_axis
-from qpwcnet.core.agc import adaptive_clip_grad
-from qpwcnet.train.loss import AutoResizeMseLoss
+from qpwcnet.app.arg_setup import with_args
 
 
 @dataclass
@@ -35,6 +38,7 @@ class Settings(Serializable):
     input_shape: Tuple[int, int] = (256, 512)
     load_ckpt: str = ''
     dataset: str = 'vimeo'
+    log_level: str = 'info'
 
 
 class TrainModel(tf.keras.Model):
@@ -113,9 +117,56 @@ def preprocess(img0, img1, img2):
     # Deal with data format.
     data_format = tf.keras.backend.image_data_format()
     if data_format == 'channels_first':
-        img_pair = tf.transpose(img_pair, (0, 3, 1, 2))
-        img1 = tf.transpose(img1, (0, 3, 1, 2))
+        #img_pair = tf.transpose(img_pair, (0, 3, 1, 2))
+        #img1 = tf.transpose(img1, (0, 3, 1, 2))
+        img_pair = einops.rearrange(img_pair, '... h w c -> ... c h w')
+        img1 = einops.rearrange(img_pair, '... h w c -> ... c h w')
     return (img_pair, img1)
+
+
+class ShowImageCallback(tf.keras.callbacks.Callback):
+    def __init__(self, cfg: Settings,
+                 log_dir: str, log_period: int = 128):
+        self.cfg = cfg
+        self.log_dir = Path(log_dir) / 'image'
+        self.log_period = log_period
+
+        self.batch_index = 0
+        self.writer = tf.summary.create_file_writer(self.log_dir)
+        self.imgs = self._get_test_triplet()
+        self.inputs = preprocess(*self.imgs)
+
+    def _get_test_triplet(self):
+        dataset = VimeoTriplet(VimeoTripletSettings(data_type='test'))
+        dataset = read_triplet_dataset(dataset,
+                                       dsize=self.cfg.input_shape,
+                                       shuffle=True,
+                                       augment=False,
+                                       prefetch=False,
+                                       batch_size=None)
+        out = next(dataset)
+        # Explicitly delete dataset,
+        # to avoid large memory consumption.
+        del dataset
+        return out
+
+    def on_batch_end(self, batch, logs={}):
+        self.batch_index += 1
+        if (self.batch_index % self.log_period) != 0:
+            return
+
+        pred_imgs = self.model.predict(self.inputs[0])
+        pred_img1 = pred_imgs[-1]
+
+        data_format = tf.keras.backend.image_data_format()
+        if data_format == 'channels_first':
+            pred_img1 = einops.rearrange(pred_img1, '... c h w -> ... h w c')
+
+        with self.writer.as_default():
+            tf.summary.image('img0', self.imgs[0], step=batch)
+            tf.summary.image('img1', self.imgs[1], step=batch)
+            tf.summary.image('img2', self.imgs[2], step=batch)
+            tf.summary.image('pred-img1', pred_img1, step=batch)
 
 
 def train(args: Settings, model: tf.keras.Model,
@@ -127,6 +178,8 @@ def train(args: Settings, model: tf.keras.Model,
         tf.keras.callbacks.TensorBoard(
             update_freq=args.update_freq,  # every 128 batches
             log_dir=path['log'], profile_batch='2,66'),
+        ShowImageCallback(args, log_dir=path['log'] / 'flow',
+                          log_period=args.update_freq)
     ]
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
 
@@ -147,6 +200,8 @@ def train(args: Settings, model: tf.keras.Model,
                   epochs=args.num_epoch,
                   callbacks=callbacks)
     except KeyboardInterrupt as e:
+        pass
+    finally:
         out_file = str(path['run'] / 'model.pb')
         logging.info(
             'saving weights to {} prior to termination ...'.format(out_file))
@@ -155,6 +210,7 @@ def train(args: Settings, model: tf.keras.Model,
 
 @with_args(Settings)
 def main(args):
+    logging.basicConfig(level=args.log_level)
     # global data format setting
     tf.keras.backend.set_image_data_format(args.data_format)
 

@@ -12,6 +12,7 @@ def step(model, inputs):
 
 
 def main():
+    tf.keras.backend.set_image_data_format('channels_first')
     show_summary = True
     show_keras_plot = True
     show_tensorboard_graph = True
@@ -20,15 +21,15 @@ def main():
     log_dir = '/tmp/pwc/graph/'
 
     # Build network.
-    # model = build_network()
-    model = build_interpolator(input_shape=(256, 512))
+    model = build_network(train=False)
+    # model = build_interpolator(input_shape=(256, 512))
     if show_summary:
         model.summary()
 
     if show_keras_plot:
         tf.keras.utils.plot_model(
             model,
-            to_file="../../img/net.png",
+            to_file="/tmp/net.png",
             show_layer_names=True,
             rankdir="TB",
             expand_nested=False,

@@ -3,6 +3,36 @@
 import math
 import tensorflow as tf
 
+import einops
+
+
+def cost_volume_to_flow(cvol: tf.Tensor, data_format: str = None):
+    """
+    Predict optical flow from cost volume by finding the argmax of correlation.
+    """
+    if data_format is None:
+        data_format = tf.keras.backend.image_data_format()
+    if data_format == 'channels_last':
+        axis = -1
+        dims = einops.parse_shape(cvol, '... c')['c']
+    else:
+        axis = -3
+        # dims = einops.parse_shape(cvol, '... c _ _')['c']
+        dims = einops.parse_shape(cvol, 'c _ _')['c']
+    imax = tf.argmax(cvol, axis=axis)
+
+    # unravel_index
+    imax = tf.cast(imax, tf.float32)
+    q = tf.sqrt(tf.cast(dims, tf.float32))
+    di = tf.floor(imax / q)
+    dj = imax - di * q
+
+    # delta from center
+    di = di - (q - 1) / 2
+    dj = dj - (q - 1) / 2
+
+    return tf.stack([di, dj], axis=axis)
+
 
 def flow_to_image(flow, data_format='channels_last'):
     if data_format == 'channels_last':
@@ -23,7 +53,6 @@ def flow_to_image(flow, data_format='channels_last'):
     # Map flow magnitude to saturation.
     # TODO(yycho0108): Potentially treat NaNs here?
     flo_mag = tf.norm(flow, axis=axis)  # ...HW
-    print(flo_mag.shape) # 2,256
 
     smax = tf.reduce_max(flo_mag, axis=(-2, -1), keepdims=True)  # N11
 
@@ -32,10 +61,6 @@ def flow_to_image(flow, data_format='channels_last'):
 
     # Value is always one.
     v = tf.ones_like(h)
-
-    print(h.shape)
-    print(s.shape)
-    print(v.shape)
 
     # NOTE(yycho0108): hsv axis here needs to be the last dimension.
     hsv = tf.stack([h, s, v], axis=-1)
