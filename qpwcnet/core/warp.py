@@ -104,9 +104,9 @@ def tf_warp(img, flow, data_format=None):
 
     # Deal with individual components
     if data_format == 'channels_first':
-        x, y = einops.rearrange(flows, '... c h w -> c ... h w', c=2)
+        x, y = einops.rearrange(flows, 'n c h w -> c n h w', c=2)
     else:
-        x, y = einops.rearrange(flows, '... h w c -> c ... h w', c=2)
+        x, y = einops.rearrange(flows, 'n h w c -> c n h w', c=2)
 
     x0 = x
     y0 = y

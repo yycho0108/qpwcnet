@@ -22,7 +22,7 @@ from qpwcnet.data.vimeo_triplet import (
     VimeoTriplet, VimeoTripletSettings)
 from qpwcnet.data.triplet_dataset_ops import read_triplet_dataset
 
-from qpwcnet.app.arg_setup import with_args
+from qpwcnet.app.util.arg_setup import with_args
 
 
 @dataclass

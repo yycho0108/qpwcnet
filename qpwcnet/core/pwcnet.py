@@ -4,16 +4,28 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 
 from qpwcnet.core.layers import _get_axis
-from qpwcnet.core.layers import (
-    Split, Upsample, Downsample, UpConv, Flow, UpFlow, lrelu, DownConv,
+from qpwcnet.core.non_layers import (
+    Split,
+    Upsample,
+    Downsample,
+    UpConv,
+    Flow,
+    UpFlow,
+    DownConv,
     FrameInterpolate)
+
+#from qpwcnet.core.layers import (
+#    Split, Upsample, Downsample, UpConv, Flow, UpFlow, DownConv,
+#    FrameInterpolate)
+
 from qpwcnet.core.mish import Mish, mish
 
 from typing import Tuple
 
 
 def flower(enc_prv, enc_nxt, decs_prv, decs_nxt,
-           output_multiscale: bool = True):
+           output_multiscale: bool = True,
+           use_tfa: bool = True):
     """ Frame interpolation stack. """
     data_format = tf.keras.backend.image_data_format()
     axis = _get_axis(data_format)  # feature axis
@@ -22,7 +34,7 @@ def flower(enc_prv, enc_nxt, decs_prv, decs_nxt,
     n = len(decs_prv)
 
     # flo_01 = fwd, i.e. warp(nxt,flo_01)==prv
-    flow = Flow()
+    flow = Flow(use_tfa=use_tfa)
     flo_01 = flow((enc_prv, enc_nxt))
     flos = [flo_01]
 
@@ -33,7 +45,7 @@ def flower(enc_prv, enc_nxt, decs_prv, decs_nxt,
 
         # Create layers at the current level.
         upsample = Upsample(scale=2.0)
-        upflow = UpFlow()
+        upflow = UpFlow(use_tfa=use_tfa)
 
         # Compute current stage motion block.
         # previous motion block + network features
@@ -207,6 +219,7 @@ def decoder(encs_prv, encs_nxt, use_skip: bool = True,
 def build_network(train=True,
                   input_shape: Tuple[int, int] = (256, 512),
                   data_format=None,
+                  use_tfa: bool = True,
                   ) -> tf.keras.Model:
     if data_format is None:
         data_format = tf.keras.backend.image_data_format()
@@ -232,7 +245,9 @@ def build_network(train=True,
 
     outputs = flower(encs_prv[-1], encs_nxt[-1],
                      decs_prv, decs_nxt,
-                     output_multiscale=train)
+                     output_multiscale=train,
+                     use_tfa=use_tfa
+                     )
 
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name='qpwc_net')
     return model
@@ -240,9 +255,12 @@ def build_network(train=True,
 
 def build_interpolator(
         input_shape: Tuple[int, int],
+        data_format=None,
+        use_tfa: bool = True,
         *args, **kwargs):
     # input
-    data_format = tf.keras.backend.image_data_format()
+    if data_format is None:
+        data_format = tf.keras.backend.image_data_format()
     if data_format == 'channels_first':
         inputs = tf.keras.Input(
             shape=(6,) + input_shape,

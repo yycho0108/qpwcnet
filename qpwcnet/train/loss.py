@@ -136,9 +136,9 @@ class FlowMseLossV2(tf.keras.losses.Loss):
         self.data_format = tf.keras.backend.image_data_format()
         self.axis = _get_axis(self.data_format)
         # NOTE(ycho): In the current loss definition,
-        # 0.5 amounts to a flow error magnitude that is ~50%
+        # 0.1 amounts to a flow error magnitude that is ~10%
         # of the image space.
-        self.loss = tf.keras.losses.Huber(0.5)
+        self.loss = tf.keras.losses.Huber(0.1)
         super().__init__(*args, **kwargs)
 
     def call(self, y_true, y_pred):

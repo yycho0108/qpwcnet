@@ -59,17 +59,26 @@ if False:
 
 def quantize_annotate_layer(layer):
     # do-nothing layers
-    if isinstance(layer, (Split, Upsample, Downsample,
-                          tf.python.keras.engine.base_layer.TensorFlowOpLayer)):
+    if isinstance(
+            layer, (tf.python.keras.engine.base_layer.TensorFlowOpLayer)):
         # NOTE(ycho): Currently only `concat_* in `TensorFlowOpLayer`
         # so it's safe to do this. o.w. we might want to do something smarter.
         return layer
 
     # no-idea-what-to-do layers
-    if isinstance(layer, tfa.layers.optical_flow.CorrelationCost):
+    if isinstance(layer, (tfa.layers.optical_flow.CorrelationCost, tf.keras.layers.Lambda)):
         # Actually, I think this should just be replaced by an
         # equivalent (non-custom) op.
         return layer
+
+    # Will be handled separately.
+    if isinstance(layer, tf.keras.layers.BatchNormalization):
+        # Actually, I think this should just be replaced by an
+        # equivalent (non-custom) op.
+        return layer
+
+
+    return tfmot.quantization.keras.quantize_annotate_layer(layer)
 
     # recursive composition layers
     if isinstance(layer, (UpConv,
@@ -140,19 +149,19 @@ def quantize_model(model: tf.keras.Model):
     _anno = quantize_annotate_layer
 
     with tfmot.quantization.keras.quantize_scope({
-        'Split': Split,
-        'Upsample': Upsample,
-        'Downsample': Downsample,
-        'UpConv': UpConv,
-        'Flow': Flow,
-        'UpFlow': UpFlow,
-        'DownConv': DownConv,
-        'OptFlow': OptFlow,
-        'FrameInterpolate': FrameInterpolate,
-        'RecursiveDelegateConfig': RecursiveDelegateConfig,
+        # 'Split': Split,
+        # 'Upsample': Upsample,
+        # 'Downsample': Downsample,
+        # 'UpConv': UpConv,
+        # 'Flow': Flow,
+        # 'UpFlow': UpFlow,
+        # 'DownConv': DownConv,
+        # 'OptFlow': OptFlow,
+        # 'FrameInterpolate': FrameInterpolate,
+        # 'RecursiveDelegateConfig': RecursiveDelegateConfig,
         'Mish': Mish(mish),
         'mish': Mish(mish),
-        'CostVolumeV2': CostVolumeV2,
+        # 'CostVolumeV2': CostVolumeV2,
         # 'lrelu' : lrelu,
         # 'DelegateConvConfig': DelegateConvConfig,
         # 'swish': tf.keras.activations.swish,
@@ -187,7 +196,7 @@ def quantize_model(model: tf.keras.Model):
         print('<quantize>')
         quantized_model = tfmot.quantization.keras.quantize_apply(
             annotated_model,
-            Custom8BitQuantizeScheme()
+            # Custom8BitQuantizeScheme()
         )
         print('</quantize>')
 
@@ -212,20 +221,23 @@ def to_tflite(model):
 def main():
     # NOTE(ycho): NEEDED to avoid segfaults. Why? I don't know.
     # In other words, `channels_first` does NOT work.
-    tf.keras.backend.set_image_data_format('channels_first')
+    # Before attempting tflite conversion, modify data format to
+    # `channels_last`. Loading weights, etc., should still work.
+    tf.keras.backend.set_image_data_format('channels_last')
 
-    model = build_network(train=True)
-    load_weights(model, '/tmp/pwc/run/119/model.h5')
+    model = build_network(train=True, use_tfa=False)
+    # load_weights(model, '/tmp/pwc/run/119/model.h5')
     # model.summary()
 
     # Single forward pass.
-    dummy = np.zeros((1, 6, 256, 512), dtype=np.float32)
+    # dummy = np.zeros((1, 6, 256, 512), dtype=np.float32)
+    dummy = np.zeros((1, 256, 512, 6), dtype=np.float32)
     out = model(dummy)
 
     quantized_model = quantize_model(model)
-    #tflite_model = to_tflite(model)
-    #with open('/tmp/qpwcnet.tflite', 'wb') as f:
-    #    f.write(tflite_model)
+    tflite_model = to_tflite(quantized_model)
+    with open('/tmp/qpwcnet.tflite', 'wb') as f:
+       f.write(tflite_model)
 
 
 if __name__ == '__main__':

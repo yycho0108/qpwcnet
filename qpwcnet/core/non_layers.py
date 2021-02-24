@@ -1,15 +1,34 @@
 #!/usr/bin/env python3
 
+"""
+Copy of layers.py, but now all layers are plain objects instead.
+"""
+
 import tensorflow as tf
 import tensorflow_addons as tfa
+import einops
 
 from qpwcnet.core.warp import tf_warp
 from qpwcnet.core.mish import Mish
 
-from typing import Tuple
+from typing import Tuple, List
 
 
 gamma = 0.000004
+
+
+def parse_image_shape(tensor: tf.Tensor,
+                      data_format=None, blocklist: List[str] = []):
+    if data_format is None:
+        data_format = tf.keras.backend.image_data_format()
+    if data_format is 'channels_first':
+        pattern = 'n c h w'
+    else:
+        pattern = 'n h w c'
+
+    for block in blocklist:
+        pattern.replace(block, '_')
+    return einops.parse_shape(tensor, pattern)
 
 
 def lrelu(x):
@@ -29,7 +48,7 @@ def _get_axis(data_format: str):
     return axis
 
 
-class CostVolume(tf.keras.layers.Layer):
+class CostVolume:
     """
     Compute CostVolume from composing tensorflow operations.
     Replacing CostVolumeV2() with CostVolume() lets us
@@ -39,10 +58,6 @@ class CostVolume(tf.keras.layers.Layer):
     def __init__(
             self, search_range=4, *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
-
-        self._config = {
-            'search_range': search_range
-        }
         self.search_range = search_range
         self.data_format = data_format
         self.axis = _get_axis(data_format)
@@ -54,24 +69,14 @@ class CostVolume(tf.keras.layers.Layer):
 
         super().__init__(*args, **kwargs)
 
-    def build(self, input_shapes):
-        # assume prv.shape == nxt.shape
-        shape = input_shapes[0]
-
-        if self.data_format == 'channels_first':
-            self.h = shape[2]
-            self.w = shape[3]
-        elif self.data_format == 'channels_last':
-            self.h = shape[1]
-            self.w = shape[2]
-        else:
-            raise ValueError(
-                'Unsupported data format : {}'.format(self.data_format))
-        super().build(input_shapes)
-
-    def call(self, inputs):
+    # @tf.function
+    def __call__(self, inputs):
         prv, nxt = inputs
+
+        shape = parse_image_shape(prv, self.data_format)
+        h, w = shape['h'], shape['w']
         r = self.search_range
+
         d = r * 2 + 1
 
         pad_nxt = self.pad(nxt)
@@ -82,10 +87,10 @@ class CostVolume(tf.keras.layers.Layer):
                 # roi = pad_nxt[:, i0:i0+h, j0:j0+w, -1]
                 if self.data_format == 'channels_first':
                     roi = tf.slice(
-                        pad_nxt, [0, 0, i0, j0], [-1, -1, self.h, self.w])
+                        pad_nxt, [0, 0, i0, j0], [-1, -1, h, w])
                 elif self.data_format == 'channels_last':
                     roi = tf.slice(
-                        pad_nxt, [0, i0, j0, 0], [-1, self.h, self.w, -1])
+                        pad_nxt, [0, i0, j0, 0], [-1, h, w, -1])
                 else:
                     raise ValueError(
                         'Unsupported data format : {}'.format(
@@ -99,124 +104,76 @@ class CostVolume(tf.keras.layers.Layer):
         out = tf.nn.leaky_relu(cost_vol, 0.1)
         return out
 
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
 
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
-
-class CostVolumeV2(tf.keras.layers.Layer):
+class CostVolumeV2:
     """
     Optimized routine with tfa.
     """
 
-    def __init__(
-            self, search_range=4, *args, **kwargs):
+    def __init__(self, search_range=4, *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
-        self._config = {
-            'search_range': search_range,
-        }
         self.search_range = search_range
         self.corr = tfa.layers.optical_flow.CorrelationCost(
             1, search_range, 1, 1, search_range, data_format)
         super().__init__(*args, **kwargs)
 
-    def call(self, inputs):
+    # @tf.function
+    def __call__(self, inputs):
         prv, nxt = inputs
         cost_vol = self.corr([prv, nxt])
         out = tf.nn.leaky_relu(cost_vol, 0.1)
         return out
 
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
 
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
-
-class Warp(tf.keras.layers.Layer):
+class Warp:
     def __init__(self, *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
         self.data_format = data_format
-        self.axis = _get_axis(data_format)
-        self.h = None
-        self.w = None
         super().__init__(*args, **kwargs)
 
-    def build(self, input_shapes):
-        shape = input_shapes[0]
-        if self.data_format == 'channels_first':
-            self.h = shape[2]
-            self.w = shape[3]
-        elif self.data_format == 'channels_last':
-            self.h = shape[1]
-            self.w = shape[2]
-        else:
-            raise ValueError(
-                'Unsupported data format : {}'.format(data_format))
-        super().build(input_shapes)
-
-    def call(self, inputs):
+    # @tf.function
+    def __call__(self, inputs):
         img, flo = inputs
         return tf_warp(img, flo, self.data_format)
 
 
-class WarpV2(tf.keras.layers.Layer):
+class WarpV2:
+    """ Warp, but with tfa """
+
     def __init__(self, *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
         self.data_format = data_format
+        self.warp = tf.keras.layers.Lambda(
+            lambda a: tfa.image.dense_image_warp(a[0], a[1]))
         super().__init__(*args, **kwargs)
 
-    def call(self, inputs):
+    # @tf.function
+    def __call__(self, inputs):
         img, flo = inputs
         if self.data_format == 'channels_first':
             img = tf.transpose(img, (0, 2, 3, 1))
             flo = tf.transpose(flo, (0, 2, 3, 1))
-            out = tfa.image.dense_image_warp(img, -flo[..., ::-1])
+            out = self.warp((img, -flo[..., ::-1]))
+            # out = tfa.image.dense_image_warp(img, -flo[..., ::-1])
             out = tf.transpose(out, (0, 3, 1, 2))
         else:
-            out = tfa.image.dense_image_warp(img, -flo[..., ::-1])
+            out = self.warp((img, -flo[..., ::-1]))
+            # out = tfa.image.dense_image_warp(img, -flo[..., ::-1])
         return out
 
 
-class ContextLayer(tf.keras.layers.Layer):
-    def __init__(self, dilation_levels, *args, **kwargs):
-        self._config = {
-            'dilation_levels': dilation_levels
-        }
-        self.dilation_levels = dilation_levels
-        super().__init__(*args, **kwargs)
-
-
-class Split(tf.keras.layers.Layer):
+class Split:
     def __init__(self, num=2, axis=-1, *args, **kwargs):
-        self._config = {
-            'num': num,
-            'axis': axis,
-        }
+        self.num = num
+        self.axis = axis
         super().__init__(*args, **kwargs)
 
-    def call(self, x):
-        return tf.split(x, self._config['num'], self._config['axis'])
-
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
-
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
+    # @tf.function
+    def __call__(self, x):
+        return tf.split(x, self.num, self.axis)
 
 
-class Downsample(tf.keras.layers.Layer):
+class Downsample:
     def __init__(self, *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
         self.downsample = tf.keras.layers.AvgPool2D(
@@ -224,41 +181,28 @@ class Downsample(tf.keras.layers.Layer):
             pool_size=(2, 2), padding='same')
         super().__init__(*args, **kwargs)
 
-    def call(self, x):
+    # @tf.function
+    def __call__(self, x):
         return self.downsample(x)
 
 
-class Upsample(tf.keras.layers.Layer):
+class Upsample:
     def __init__(self, scale: float = 1.0, *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
-        self._config = {
-            'scale': scale
-        }
         self.scale = scale
         self.upsample = tf.keras.layers.UpSampling2D(
             data_format=data_format, interpolation='bilinear')
-        super().__init__(*args, **kwargs)
+        super().__init__()
+        # super().__init__(*args, **kwargs)
 
-    def call(self, x):
+    # @tf.function
+    def __call__(self, x):
         return tf.constant(self.scale, dtype=tf.float32) * self.upsample(x)
 
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
 
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
-
-class UpConv(tf.keras.layers.Layer):
+class UpConv:
     def __init__(self, filters: int, *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
-        self._config = {
-            'filters': filters,
-        }
-
         axis = _get_axis(data_format)
         # self.norm = tf.keras.layers.BatchNormalization(axis=axis)
         self.conv_up = tf.keras.layers.Conv2DTranspose(
@@ -268,30 +212,20 @@ class UpConv(tf.keras.layers.Layer):
             data_format=data_format)
         super().__init__(*args, **kwargs)
 
-    def call(self, x, training=None):
+    # @tf.function
+    def __call__(self, x):
         return self.conv_up(x)
         # return self.norm(self.conv_up(x), training=training)
 
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
 
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
-
-class OptFlow(tf.keras.layers.Layer):
-    def __init__(self, filters: Tuple[int, ...] = (
-            128, 64, 32, 16), *args, **kwargs):
+class OptFlow:
+    def __init__(self,
+                 filters: Tuple[int, ...] = (128, 64, 32, 16),
+                 scale: float = None,
+                 *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
         self.data_format = data_format
         axis = _get_axis(data_format)
-
-        self._config = {
-            'filters': filters
-        }
 
         # Intermediate Features ...
         self.feat = []
@@ -299,13 +233,21 @@ class OptFlow(tf.keras.layers.Layer):
             conv = tf.keras.layers.SeparableConv2D(
                 filters=f, kernel_size=3, strides=1, padding='same',
                 activation='Mish', use_bias=True, data_format=data_format,
-                name='of_feat_{}'.format(i))
+                # name='of_feat_{}'.format(i)
+            )
             self.feat.append(conv)
+        self.scale = scale
 
         # Normalize right before computing the flow.
         # NOTE(ycho): `fused` necessary for TFLITE conversion?
         # self.norm = tf.keras.layers.BatchNormalization(axis=axis, fused=False)
-        self.norm = tf.keras.layers.BatchNormalization(axis=axis)
+
+        # 1x1 conv for easier tflite conversion. yep, we're really doing this.
+        self.conv = tf.keras.layers.Conv2D(
+            filters=filters[-1],
+            kernel_size=1, strides=1, padding='same', activation='Mish',
+            use_bias=True, data_format=data_format)
+        self.norm = tf.keras.layers.BatchNormalization(axis=axis, fused=False)
 
         # Final flow with free scale
         self.flow = tf.keras.layers.Conv2D(
@@ -316,52 +258,36 @@ class OptFlow(tf.keras.layers.Layer):
             activation=None,
             use_bias=False,
             data_format=data_format,
-            name='of_flow'
+            # name='of_flow'
         )
-        # flow scale should be normalized wrt input shape
-        self.scale = 1.0
         super().__init__(*args, **kwargs)
 
-    def build(self, input_shape):
-        shape = input_shape
-        if self.data_format == 'channels_first':
-            # NCHW -> 2,3
-            h, w = shape[2], shape[3]
-        elif self.data_format == 'channels_last':
-            # NHWC -> 1,2
-            h, w = shape[1], shape[2]
-        else:
-            raise ValueError(
-                'Unsupported data format : {}'.format(data_format))
-        self.scale = (float(h)**2 + float(w**2)) ** 0.5
-        super().build(input_shape)
+    # @tf.function
+    def __call__(self, inputs):
+        shape = parse_image_shape(inputs)
 
-    def call(self, inputs, training=None):
+        # NOTE(ycho): flow scale is normalized wrt input shape.
+        if self.scale is None:
+            scale = float(shape['h']**2 + shape['w']**2)**0.5
+        else:
+            # I guess this is useful when we're trying to load
+            # an existing `scale`.
+            scale = self.scale
+
         x = inputs
         for conv in self.feat:
             x = conv(x)
-        x = self.scale * self.flow(self.norm(x, training=training))
+        x = scale * self.flow(self.norm(self.conv(x)))
         return x
 
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
 
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
-
-class FrameInterpolate(tf.keras.layers.Layer):
+class FrameInterpolate:
     def __init__(self, up: bool = False, *args, **kwargs):
-        self._config = {
-            'up': up
-        }
         data_format = tf.keras.backend.image_data_format()
         self.up = up
         self.axis = _get_axis(data_format)
         self.warp = WarpV2()
+        # self.warp = Warp()
         self.conv1 = tf.keras.layers.SeparableConv2D(
             filters=64, kernel_size=3, strides=1, padding='same',
             activation='Mish', use_bias=True, data_format=data_format)
@@ -372,9 +298,11 @@ class FrameInterpolate(tf.keras.layers.Layer):
             activation=None,
             padding='same',
             data_format=data_format)
-        super().__init__(*args, **kwargs)
+        super().__init__()
+        # super().__init__(*args, **kwargs)
 
-    def call(self, inputs):
+    # @tf.function
+    def __call__(self, inputs):
         if self.up:
             prv, nxt, flo_01, flo_10, img_u = inputs
         else:
@@ -392,25 +320,13 @@ class FrameInterpolate(tf.keras.layers.Layer):
             feats = tf.concat([prv_w, nxt_w, flo_01, flo_10], axis=self.axis)
         return self.conv2(self.conv1(feats))
 
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
 
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
-
-class Flow(tf.keras.layers.Layer):
+class Flow:
     """
     First optical flow estimation block.
     """
 
     def __init__(self, use_tfa: bool = True, *args, **kwargs):
-        self._config = {
-            'use_tfa': use_tfa
-        }
         data_format = tf.keras.backend.image_data_format()
         self.flow = OptFlow()
         self.axis = _get_axis(data_format)
@@ -422,7 +338,8 @@ class Flow(tf.keras.layers.Layer):
 
         super().__init__(*args, **kwargs)
 
-    def call(self, inputs):
+    # @tf.function
+    def __call__(self, inputs):
         prv, nxt = inputs
         cost = self.cost_volume((prv, nxt))
         feat = [cost, prv, nxt]
@@ -430,17 +347,8 @@ class Flow(tf.keras.layers.Layer):
         # Consider additional procssing here.
         return self.flow(feat)
 
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
 
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
-
-class UpFlow(tf.keras.layers.Layer):
+class UpFlow:
     """
     Second optical flow estimation block.
     Refine/upsample the input optical flow.
@@ -464,7 +372,8 @@ class UpFlow(tf.keras.layers.Layer):
         self.axis = _get_axis(data_format)
         super().__init__(*args, **kwargs)
 
-    def call(self, inputs):
+    # @tf.function
+    def __call__(self, inputs):
         # prv, nxt, flo):
         prv, nxt, flo = inputs
         feat = []
@@ -485,17 +394,8 @@ class UpFlow(tf.keras.layers.Layer):
         # Consider additional procssing here.
         return self.flow(feat)
 
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
 
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
-
-class DownConv(tf.keras.layers.Layer):
+class DownConv:
     """Conv+Mish+GroupNorm"""
 
     def __init__(self, num_filters,
@@ -503,11 +403,6 @@ class DownConv(tf.keras.layers.Layer):
                  *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
         axis = _get_axis(data_format)
-
-        self._config = {
-            'num_filters': num_filters,
-            'use_normalizer': use_normalizer
-        }
         self.use_normalizer = use_normalizer
         # self.conv = tf.keras.layers.SeparableConv2D(filters=num_filters, kernel_size=3,
         # strides=2, activation='Mish', padding='same')
@@ -549,7 +444,8 @@ class DownConv(tf.keras.layers.Layer):
 
         super().__init__(*args, **kwargs)
 
-    def call(self, inputs, training=None):
+    # @tf.function
+    def __call__(self, inputs, training=None):
         x = inputs
         if self.use_normalizer:
             x = self.norm_a(self.conv_a(x), training=training)
@@ -560,12 +456,3 @@ class DownConv(tf.keras.layers.Layer):
             x = (self.conv_aa(x))
             x = (self.conv_b(x))
         return x
-
-    def get_config(self):
-        config = super().get_config().copy()
-        config.update(self._config)
-        return config
-
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)

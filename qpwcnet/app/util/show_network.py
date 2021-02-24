@@ -4,6 +4,7 @@ import numpy as np
 from pathlib import Path
 import tensorflow as tf
 from qpwcnet.core.pwcnet import build_network, build_interpolator
+from qpwcnet.core.util import disable_gpu
 
 
 @tf.function
@@ -12,6 +13,8 @@ def step(model, inputs):
 
 
 def main():
+    # disable_gpu()
+
     tf.keras.backend.set_image_data_format('channels_first')
     show_summary = True
     show_keras_plot = True
@@ -25,6 +28,8 @@ def main():
     # model = build_interpolator(input_shape=(256, 512))
     if show_summary:
         model.summary()
+
+    print(model.to_json())
 
     if show_keras_plot:
         tf.keras.utils.plot_model(
