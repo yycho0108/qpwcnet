@@ -295,14 +295,17 @@ class OptFlow(tf.keras.layers.Layer):
 
         # Intermediate Features ...
         self.feat = []
-        for f in filters:
+        for i, f in enumerate(filters):
             conv = tf.keras.layers.SeparableConv2D(
                 filters=f, kernel_size=3, strides=1, padding='same',
-                activation='Mish', use_bias=True, data_format=data_format)
+                activation='Mish', use_bias=True, data_format=data_format,
+                name='of_feat_{}'.format(i))
             self.feat.append(conv)
 
         # Normalize right before computing the flow.
-        self.norm = tf.keras.layers.BatchNormalization(axis=axis, fused=False)
+        # NOTE(ycho): `fused` necessary for TFLITE conversion?
+        # self.norm = tf.keras.layers.BatchNormalization(axis=axis, fused=False)
+        self.norm = tf.keras.layers.BatchNormalization(axis=axis)
 
         # Final flow with free scale
         self.flow = tf.keras.layers.Conv2D(
@@ -312,7 +315,8 @@ class OptFlow(tf.keras.layers.Layer):
             padding='same',
             activation=None,
             use_bias=False,
-            data_format=data_format
+            data_format=data_format,
+            name='of_flow'
         )
         # flow scale should be normalized wrt input shape
         self.scale = 1.0
@@ -448,8 +452,11 @@ class UpFlow(tf.keras.layers.Layer):
         }
         data_format = tf.keras.backend.image_data_format()
         self.flow = OptFlow()
+        # NOTE(ycho): Consider also switching between Warp/WarpV2
+        # based on `use_tfa`
         # self.warp = Warp()
         self.warp = WarpV2()
+
         if use_tfa:
             self.cost_volume = CostVolumeV2()
         else:
