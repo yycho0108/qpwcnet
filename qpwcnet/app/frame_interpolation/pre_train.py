@@ -165,14 +165,15 @@ class ShowImageCallback(tf.keras.callbacks.Callback):
 
         overlay = 0.5 * self.imgs[0] + 0.5 * self.imgs[2]
         with self.writer.as_default():
+            step = self.cfg.batch_size * self.batch_index
             # NOTE(ycho): [None, ...] to add batch dimension:
             # Apparently image summary needs to be rank 4.
-            tf.summary.image('img0', self.imgs[0], step=batch)
-            tf.summary.image('img1', self.imgs[1], step=batch)
-            tf.summary.image('img2', self.imgs[2], step=batch)
-            tf.summary.image('overlay', overlay, step=batch)
+            tf.summary.image('img0', self.imgs[0], step=step)
+            tf.summary.image('img1', self.imgs[1], step=step)
+            tf.summary.image('img2', self.imgs[2], step=step)
+            tf.summary.image('overlay', overlay, step=step)
             # NOTE(ycho): +0.5 to undo preprocess()
-            tf.summary.image('pred-img1', 0.5 + pred_img1, step=batch)
+            tf.summary.image('pred-img1', 0.5 + pred_img1, step=step)
 
 
 def train(args: Settings, model: tf.keras.Model,

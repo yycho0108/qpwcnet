@@ -235,11 +235,12 @@ class ShowImageCallback(tf.keras.callbacks.Callback):
                 method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
             flow_imgs.append(flow_img)
 
+        step = self.batch_index * self.batch_size
         with self.writer.as_default():
             # will this work?
             for i, flow_img in enumerate(flow_imgs):
                 name = 'flow-{:02d}'.format(i)
-                tf.summary.image(name, flow_img, step=batch,
+                tf.summary.image(name, flow_img, step=step,
                                  max_outputs=3)
 
 
