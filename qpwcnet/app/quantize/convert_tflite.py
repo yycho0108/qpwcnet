@@ -13,7 +13,8 @@ from qpwcnet.core.mish import Mish, mish  # hmm...
 from qpwcnet.train.util import load_weights
 # from qpwcnet.core.quantize import DelegateConvConfig
 # , CustomQuantizeScheme, replace_layer
-from qpwcnet.core.quantize import RecursiveDelegateConfig, replace_layer
+from qpwcnet.core.quantize.quantize import RecursiveDelegateConfig, replace_layer
+from qpwcnet.core.quantize.transform import Custom8BitQuantizeScheme
 from tensorflow_model_optimization.python.core.quantization.keras.default_8bit import default_8bit_quantize_registry
 from tensorflow_model_optimization.python.core.quantization.keras import quantize_aware_activation
 
@@ -71,16 +72,20 @@ def quantize_annotate_layer(layer):
         return layer
 
     # recursive composition layers
-    if isinstance(layer, (UpConv, Flow, UpFlow,
-                          DownConv, OptFlow, FrameInterpolate)):
+    if isinstance(layer, (UpConv,
+                          DownConv,
+                          #Flow, # hmm...
+                          #UpFlow,
+                          #OptFlow,
+                          FrameInterpolate
+                          )):
         return tfmot.quantization.keras.quantize_annotate_layer(
             layer, RecursiveDelegateConfig())
 
     # specialize on Mish
-    # if isinstance(layer, Mish):
-    #     return tfmot.quantization.keras.quantize_annotate_layer(
-    # layer,
-    # default_8bit_quantize_registry.Default8BitActivationQuantizeConfig())
+    if isinstance(layer, Mish):
+        return tfmot.quantization.keras.quantize_annotate_layer(
+            layer, default_8bit_quantize_registry.Default8BitActivationQuantizeConfig())
 
     # fallback
     print('fallback = {}({})'.format(layer, layer.name))
@@ -145,7 +150,9 @@ def quantize_model(model: tf.keras.Model):
         'OptFlow': OptFlow,
         'FrameInterpolate': FrameInterpolate,
         'RecursiveDelegateConfig': RecursiveDelegateConfig,
-        # 'Mish': Mish(mish),
+        'Mish': Mish(mish),
+        'mish': Mish(mish),
+        'CostVolumeV2': CostVolumeV2,
         # 'lrelu' : lrelu,
         # 'DelegateConvConfig': DelegateConvConfig,
         # 'swish': tf.keras.activations.swish,
@@ -156,12 +163,12 @@ def quantize_model(model: tf.keras.Model):
         #        clone_function = lambda l
         #        )
 
-        new_input = tf.keras.Input((6, 256, 512))
-        cloned_model = tf.keras.Model(
-            inputs=[new_input],
-            outputs=model.call(new_input))
+        #new_input = tf.keras.Input((6, 256, 512))
+        #cloned_model = tf.keras.Model(
+        #    inputs=[new_input],
+        #    outputs=model.call(new_input))
 
-        replaced_model = cloned_model
+        #replaced_model = cloned_model
 
         #replaced_model = replace_layer(cloned_model,
         #                               replace_predicate,
@@ -172,7 +179,7 @@ def quantize_model(model: tf.keras.Model):
 
         print('<annotate>')
         annotated_model = tf.keras.models.clone_model(
-            replaced_model,
+            model,
             clone_function=_anno
         )
         print('</annotate>')
@@ -180,7 +187,7 @@ def quantize_model(model: tf.keras.Model):
         print('<quantize>')
         quantized_model = tfmot.quantization.keras.quantize_apply(
             annotated_model,
-            #CustomQuantizeScheme
+            Custom8BitQuantizeScheme()
         )
         print('</quantize>')
 
@@ -205,20 +212,20 @@ def to_tflite(model):
 def main():
     # NOTE(ycho): NEEDED to avoid segfaults. Why? I don't know.
     # In other words, `channels_first` does NOT work.
-    tf.keras.backend.set_image_data_format('channels_last')
+    tf.keras.backend.set_image_data_format('channels_first')
 
     model = build_network(train=True)
     load_weights(model, '/tmp/pwc/run/119/model.h5')
     # model.summary()
 
     # Single forward pass.
-    dummy = np.zeros((1, 256, 512, 6), dtype=np.float32)
+    dummy = np.zeros((1, 6, 256, 512), dtype=np.float32)
     out = model(dummy)
 
-    # quantized_model = quantize_model(model)
-    tflite_model = to_tflite(model)
-    with open('/tmp/qpwcnet.tflite', 'wb') as f:
-        f.write(tflite_model)
+    quantized_model = quantize_model(model)
+    #tflite_model = to_tflite(model)
+    #with open('/tmp/qpwcnet.tflite', 'wb') as f:
+    #    f.write(tflite_model)
 
 
 if __name__ == '__main__':
