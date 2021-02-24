@@ -12,6 +12,47 @@ from qpwcnet.core.mish import Mish, mish
 from typing import Tuple
 
 
+def flower(enc_prv, enc_nxt, decs_prv, decs_nxt,
+           output_multiscale: bool = True):
+    """ Frame interpolation stack. """
+    data_format = tf.keras.backend.image_data_format()
+    axis = _get_axis(data_format)  # feature axis
+
+    # How many encoding/decoding layers?
+    n = len(decs_prv)
+
+    # flo_01 = fwd, i.e. warp(nxt,flo_01)==prv
+    flow = Flow()
+    flo_01 = flow((enc_prv, enc_nxt))
+    flos = [flo_01]
+
+    for i in range(n):
+        # Get inputs at current layer ...
+        dec_prv = decs_prv[i]
+        dec_nxt = decs_nxt[i]
+
+        # Create layers at the current level.
+        upsample = Upsample(scale=2.0)
+        upflow = UpFlow()
+
+        # Compute current stage motion block.
+        # previous motion block + network features
+        # NOTE(ycho): Unlike typical upsampling, also mulx2
+        flo_01_u = upsample(flo_01)
+        flo_01 = upflow((dec_prv, dec_nxt, flo_01_u))
+        flos.append(flo_01)
+
+    # Final full-res flow is ONLY upsampled.
+    flo_01 = Upsample(scale=2.0)(flo_01)
+    flos.append(flo_01)
+
+    if output_multiscale:
+        outputs = flos
+    else:
+        outputs = [flo_01]
+    return outputs
+
+
 def interpolator(img_prv, img_nxt,
                  enc_prv, enc_nxt, decs_prv, decs_nxt,
                  output_multiscale: bool = True):
@@ -87,7 +128,8 @@ def interpolator(img_prv, img_nxt,
     return imgs[-1]
 
 
-def encoder(img_prv, img_nxt, output_features: bool = False):
+def encoder(img_prv, img_nxt, output_features: bool = False,
+            train: bool = True):
     """
     Feature computation encoder.
     Assumes inputs is a pair of images that has been
@@ -98,7 +140,10 @@ def encoder(img_prv, img_nxt, output_features: bool = False):
     # Maybe AGC will solve all our problems.
     layers = []
     for num_filters in [16, 32, 64, 128, 256]:
-        layers.append(DownConv(num_filters, use_normalizer=False))
+        conv = DownConv(num_filters, use_normalizer=False)
+        if not train:
+            conv.trainable = False
+        layers.append(conv)
 
     # Apply feature layers...
     f = img_prv
@@ -120,15 +165,20 @@ def encoder(img_prv, img_nxt, output_features: bool = False):
         return (feats_prv[-1], feats_nxt[-1])
 
 
-def decoder(encs_prv, encs_nxt, use_skip: bool = True):
+def decoder(encs_prv, encs_nxt, use_skip: bool = True,
+            train: bool = True):
     data_format = tf.keras.backend.image_data_format()
     axis = _get_axis(data_format)
+    # print('axis={}'.format(axis)) # 1?
 
     # build
     layers = []
     for num_filters in [128, 64, 32, 16]:
         # NOTE(ycho): does not include layer of equal size as input
-        layers.append(UpConv(num_filters))
+        conv = UpConv(num_filters)
+        if not train:
+            conv.trainable = False
+        layers.append(conv)
 
     # apply/prv
     f = encs_prv[-1]
@@ -154,63 +204,38 @@ def decoder(encs_prv, encs_nxt, use_skip: bool = True):
     return (decs_prv, decs_nxt)
 
 
-def build_network(train=True, data_format='channels_first') -> tf.keras.Model:
+def build_network(train=True,
+                  input_shape: Tuple[int, int] = (256, 512),
+                  data_format=None,
+                  ) -> tf.keras.Model:
+    if data_format is None:
+        data_format = tf.keras.backend.image_data_format()
+    # Input
     if data_format == 'channels_first':
-        shape = (6, 256, 512)
-        axis = 1
-    elif data_format == 'channels_last':
-        shape = (256, 512, 6)
-        axis = 3
+        inputs = tf.keras.Input(
+            shape=(6,) + input_shape,
+            dtype=tf.float32, name='inputs')
     else:
-        raise ValueError('Unsupported data format : {}'.format(data_format))
+        inputs = tf.keras.Input(
+            shape=input_shape + (6,),
+            dtype=tf.float32, name='inputs')
 
-    inputs = tf.keras.Input(shape=shape, dtype=tf.float32, name='inputs')
+    # Split input.
+    axis = _get_axis(data_format)
     img_prv, img_nxt = Split(2, axis=axis)(inputs)
 
-    # Compute features.
-    feat_layers = []
-    for f in [16, 32, 64, 128, 256]:
-        feat_layers.append(DownConv(f))
+    # hmm...
+    encs_prv, encs_nxt = encoder(img_prv, img_nxt, True,
+                                 train=True)
+    decs_prv, decs_nxt = decoder(encs_prv, encs_nxt, True,
+                                 train=True)
 
-    feats_prv = []
-    feats_nxt = []
+    outputs = flower(encs_prv[-1], encs_nxt[-1],
+                     decs_prv, decs_nxt,
+                     output_multiscale=train)
 
-    f = img_prv
-    for l in feat_layers:
-        f = l(f)
-        feats_prv.append(f)
-
-    f = img_nxt
-    for l in feat_layers:
-        f = l(f)
-        feats_nxt.append(f)
-
-    # Compute optical flow.
-    flo = None
-    flos = []
-    for feat_prv, feat_nxt in zip(feats_prv[::-1], feats_nxt[::-1]):
-        if flo is not None:
-            # Compute upsampled flow from the previous layer.
-            flo_u = Upsample(scale=2.0)(flo)
-
-            # Compute the refined flow.
-            args = (feat_prv, feat_nxt, flo_u)
-            flo = UpFlow()(args)
-        else:
-            # Compute the first flow layer.
-            args = (feat_prv, feat_nxt)
-            flo = Flow()(args)
-        flos.append(flo)
-
-    # Compute final full-res optical flow.
-    flo = Upsample(scale=2.0)(flo)
-    flos.append(flo)
-
-    if train:
-        outputs = flos
-    else:
-        outputs = [flo]
-    return tf.keras.Model(inputs=inputs, outputs=outputs, name='qpwc_net')
+    model = tf.keras.Model(inputs=inputs, outputs=outputs, name='qpwc_net')
+    return model
 
 
 def build_interpolator(
@@ -228,16 +253,15 @@ def build_interpolator(
             dtype=tf.float32, name='inputs')
 
     # Split input.
-    data_format = tf.keras.backend.image_data_format()
     axis = _get_axis(data_format)
     img_prv, img_nxt = Split(2, axis=axis)(inputs)
 
     encs_prv, encs_nxt = encoder(img_prv, img_nxt, True)
     decs_prv, decs_nxt = decoder(encs_prv, encs_nxt, True)
-    out = interpolator(img_prv, img_nxt,
-                       encs_prv[-1], encs_nxt[-1],
-                       decs_prv, decs_nxt, *args, **kwargs)
-    return tf.keras.Model(inputs=inputs, outputs=out, name='qpwcnet-pretrain')
+    outputs = interpolator(img_prv, img_nxt,
+                           encs_prv[-1], encs_nxt[-1],
+                           decs_prv, decs_nxt, *args, **kwargs)
+    return tf.keras.Model(inputs=inputs, outputs=outputs, name='qpwc_net')
 
 
 def main():

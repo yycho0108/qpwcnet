@@ -2,9 +2,11 @@
 
 import tensorflow as tf
 import tensorflow_addons as tfa
+import einops
 
 
-def get_pixel_value(img, x, y):
+def get_pixel_value(
+        img, x, y, data_format=None):
     """
     Utility function to get pixel value for coordinate
     vectors x and y from a  4D tensor image.
@@ -17,8 +19,31 @@ def get_pixel_value(img, x, y):
     -------
     - output: tensor of shape (B, H, W, C)
     """
+    if data_format is None:
+        data_format = tf.keras.backend.image_data_format()
+
+    if data_format == 'channels_first':
+        axis = -3
+    else:
+        axis = -1
+
+    batch_dims = tf.rank(img) - 3
+
+    # NOTE(ycho): HAS TO BE -1 due to tensorflow constraints.
+    # indices[-1]
     indices = tf.stack([y, x], axis=-1)
-    out = tf.gather_nd(img, indices, batch_dims=1)
+
+    if data_format == 'channels_first':
+        img = einops.rearrange(img, '... c h w -> ... h w c')
+    out = tf.gather_nd(img, indices, batch_dims=batch_dims)
+    if data_format == 'channels_first':
+        out = einops.rearrange(out, '... h w c -> ... c h w')
+
+    #print(x.shape) # 1,256,512
+    #print(y.shape) # 1,256,512
+    #print(indices.shape) # 1,256,512,2
+    #print(img.shape) #1,3,256,512
+    #out = tf.gather_nd(img, indices, batch_dims=batch_dims)
     return out
     #shape = tf.shape(x)
     #batch_size = shape[0]
@@ -35,31 +60,54 @@ def get_pixel_value(img, x, y):
     # return tf.gather_nd(img, indices)
 
 
-def tf_warp(img, flow):
-    W, H = tf.cast(tf.shape(img)[2], tf.float32), tf.cast(
-        tf.shape(img)[1], tf.float32)
-    x, y = tf.meshgrid(tf.range(W), tf.range(H))
-    x = tf.expand_dims(x, 0)
-    x = tf.expand_dims(x, -1)
+def tf_warp(img, flow, data_format=None):
+    if data_format is None:
+        data_format = tf.keras.backend.image_data_format()
+    # 3D pattern
+    if data_format == 'channels_first':
+        pattern = '_ h w'
+        axis = -3
+    else:
+        pattern = 'h w _'
+        axis = -1
 
-    y = tf.expand_dims(y, 0)
-    y = tf.expand_dims(y, -1)
+    # Check if batched ...
+    if tf.rank(flow) >= 4:
+        is_batch = True
+
+    if is_batch:
+        pattern = '_ ' + pattern
+
+    shape = einops.parse_shape(img, pattern)
+    W, H = shape['w'], shape['h']
+
+    # Compute grid coordinates.
+    x, y = tf.meshgrid(tf.range(W), tf.range(H))
+
+    # Add channel dims
+    x = tf.expand_dims(x, axis=axis)
+    y = tf.expand_dims(y, axis=axis)
+
+    # Add batch dims
+    if is_batch:
+        x = tf.expand_dims(x, axis=0)
+        y = tf.expand_dims(y, axis=0)
 
     x = tf.cast(x, tf.float32)
     y = tf.cast(y, tf.float32)
-    grid = tf.concat([x, y], axis=3)
-    # print 'grid shape:', grid.shape
-    # print 'x shape:', x.get_shape()
-    # print 'y shape:', y.get_shape()
-    # flow = tf.concat([flow[:, :, :, 0:1] * W, flow[:, :, :, 1:2] * H], 3)
+    grid = tf.concat([x, y], axis=axis)
 
     flows = grid + flow
     max_y = tf.cast(H - 1, tf.int32)
     max_x = tf.cast(W - 1, tf.int32)
-    zero = tf.zeros([], dtype=tf.int32)
+    zero = tf.constant(0, dtype=tf.int32)
 
-    x = flows[:, :, :, 0]
-    y = flows[:, :, :, 1]
+    # Deal with individual components
+    if data_format == 'channels_first':
+        x, y = einops.rearrange(flows, '... c h w -> c ... h w', c=2)
+    else:
+        x, y = einops.rearrange(flows, '... h w c -> c ... h w', c=2)
+
     x0 = x
     y0 = y
     x0 = tf.cast(x0, tf.int32)
@@ -74,10 +122,10 @@ def tf_warp(img, flow):
     y1 = tf.clip_by_value(y1, zero, max_y)
 
     # get pixel value at corner coords
-    Ia = get_pixel_value(img, x0, y0)
-    Ib = get_pixel_value(img, x0, y1)
-    Ic = get_pixel_value(img, x1, y0)
-    Id = get_pixel_value(img, x1, y1)
+    Ia = get_pixel_value(img, x0, y0, data_format)
+    Ib = get_pixel_value(img, x0, y1, data_format)
+    Ic = get_pixel_value(img, x1, y0, data_format)
+    Id = get_pixel_value(img, x1, y1, data_format)
 
     # recast as float for delta calculation
     x0 = tf.cast(x0, tf.float32)
@@ -92,10 +140,10 @@ def tf_warp(img, flow):
     wd = (x - x0) * (y - y0)
 
     # add dimension for addition
-    wa = tf.expand_dims(wa, axis=3)
-    wb = tf.expand_dims(wb, axis=3)
-    wc = tf.expand_dims(wc, axis=3)
-    wd = tf.expand_dims(wd, axis=3)
+    wa = tf.expand_dims(wa, axis=axis)
+    wb = tf.expand_dims(wb, axis=axis)
+    wc = tf.expand_dims(wc, axis=axis)
+    wd = tf.expand_dims(wd, axis=axis)
 
     # compute output
     out = tf.add_n([wa * Ia, wb * Ib, wc * Ic, wd * Id])

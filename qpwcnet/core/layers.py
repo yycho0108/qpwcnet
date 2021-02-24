@@ -3,7 +3,7 @@
 import tensorflow as tf
 import tensorflow_addons as tfa
 
-from qpwcnet.core.warp import get_pixel_value
+from qpwcnet.core.warp import tf_warp
 from qpwcnet.core.mish import Mish
 
 from typing import Tuple
@@ -14,14 +14,6 @@ gamma = 0.00004
 
 def lrelu(x):
     return tf.nn.leaky_relu(x, 0.1)
-
-
-def cost_volume(prv, nxt, search_scale=1, data_format='channels_last'):
-    corr = tfa.layers.optical_flow.CorrelationCost(
-        1, 3 * search_scale, 1 * search_scale, 1 * search_scale, 3 *
-        search_scale, data_format)(
-        [prv, nxt])
-    return lrelu(corr)
 
 
 def _get_axis(data_format: str):
@@ -38,9 +30,14 @@ def _get_axis(data_format: str):
 
 
 class CostVolume(tf.keras.layers.Layer):
+    """
+    Compute CostVolume from composing tensorflow operations.
+    Replacing CostVolumeV2() with CostVolume() lets us
+    convert the model to tflite.
+    """
+
     def __init__(
-            self, search_range=4, *args, **
-            kwargs):
+            self, search_range=4, *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
 
         self._config = {
@@ -58,7 +55,9 @@ class CostVolume(tf.keras.layers.Layer):
         super().__init__(*args, **kwargs)
 
     def build(self, input_shapes):
+        # assume prv.shape == nxt.shape
         shape = input_shapes[0]
+
         if self.data_format == 'channels_first':
             self.h = shape[2]
             self.w = shape[3]
@@ -116,8 +115,7 @@ class CostVolumeV2(tf.keras.layers.Layer):
     """
 
     def __init__(
-            self, search_range=4, *args, **
-            kwargs):
+            self, search_range=4, *args, **kwargs):
         data_format = tf.keras.backend.image_data_format()
         self._config = {
             'search_range': search_range,
@@ -167,75 +165,7 @@ class Warp(tf.keras.layers.Layer):
 
     def call(self, inputs):
         img, flo = inputs
-
-        # Create a 2D sampling grid.
-        x, y = tf.meshgrid(tf.range(self.w), tf.range(self.h))
-
-        # 2D grid + batch + depth dims.
-        x = tf.expand_dims(x[None, ...], self.axis)  # 11HW
-        y = tf.expand_dims(y[None, ...], self.axis)
-        x = tf.cast(x, tf.float32)
-        y = tf.cast(y, tf.float32)
-
-        grid_src = tf.concat([x, y], axis=self.axis)  # 12HW
-        grid_dst = grid_src + flo  # B2HW
-        x, y = tf.unstack(grid_dst, axis=self.axis)  # BHW
-
-        max_y = tf.cast(self.h - 1, tf.int32)
-        max_x = tf.cast(self.w - 1, tf.int32)
-
-        x0 = x
-        y0 = y
-        x0 = tf.cast(x0, tf.int32)
-        x1 = x0 + 1
-        y0 = tf.cast(y0, tf.int32)
-        y1 = y0 + 1
-
-        # Clip to range [0, H/W] to not violate img boundaries.
-        x0 = tf.clip_by_value(x0, 0, max_x)
-        x1 = tf.clip_by_value(x1, 0, max_x)
-        y0 = tf.clip_by_value(y0, 0, max_y)
-        y1 = tf.clip_by_value(y1, 0, max_y)
-
-        # get pixel value at corner coords
-        if self.data_format == 'channels_first':
-            # nchw -> nhwc
-            img_nhwc = tf.transpose(img, (0, 2, 3, 1))
-            Ia = get_pixel_value(img_nhwc, x0, y0)
-            Ib = get_pixel_value(img_nhwc, x0, y1)
-            Ic = get_pixel_value(img_nhwc, x1, y0)
-            Id = get_pixel_value(img_nhwc, x1, y1)
-            # nhwc -> nchw
-            Ia, Ib, Ic, Id = [tf.transpose(x, (0, 3, 1, 2))
-                              for x in (Ia, Ib, Ic, Id)]
-        else:
-            Ia = get_pixel_value(img, x0, y0)
-            Ib = get_pixel_value(img, x0, y1)
-            Ic = get_pixel_value(img, x1, y0)
-            Id = get_pixel_value(img, x1, y1)
-
-        # recast as float for delta calculation
-        x0 = tf.cast(x0, tf.float32)
-        x1 = tf.cast(x1, tf.float32)
-        y0 = tf.cast(y0, tf.float32)
-        y1 = tf.cast(y1, tf.float32)
-
-        # calculate deltas
-        wa = (x1 - x) * (y1 - y)
-        wb = (x1 - x) * (y - y0)
-        wc = (x - x0) * (y1 - y)
-        wd = (x - x0) * (y - y0)
-
-        # add dimension for addition
-        wa = tf.expand_dims(wa, axis=self.axis)
-        wb = tf.expand_dims(wb, axis=self.axis)
-        wc = tf.expand_dims(wc, axis=self.axis)
-        wd = tf.expand_dims(wd, axis=self.axis)
-
-        # compute output
-        out = tf.add_n([wa * Ia, wb * Ib, wc * Ic, wd * Id])
-
-        return out
+        return tf_warp(img, flo, self.data_format)
 
 
 class WarpV2(tf.keras.layers.Layer):
@@ -372,7 +302,7 @@ class OptFlow(tf.keras.layers.Layer):
             self.feat.append(conv)
 
         # Normalize right before computing the flow.
-        self.norm = tf.keras.layers.BatchNormalization(axis=axis)
+        self.norm = tf.keras.layers.BatchNormalization(axis=axis, fused=False)
 
         # Final flow with free scale
         self.flow = tf.keras.layers.Conv2D(
@@ -473,12 +403,18 @@ class Flow(tf.keras.layers.Layer):
     First optical flow estimation block.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, use_tfa: bool = True, *args, **kwargs):
+        self._config = {
+            'use_tfa': use_tfa
+        }
         data_format = tf.keras.backend.image_data_format()
         self.flow = OptFlow()
         self.axis = _get_axis(data_format)
-        # self.cost_volume = CostVolume()
-        self.cost_volume = CostVolumeV2()
+
+        if use_tfa:
+            self.cost_volume = CostVolumeV2()
+        else:
+            self.cost_volume = CostVolume()
 
         super().__init__(*args, **kwargs)
 
@@ -490,6 +426,15 @@ class Flow(tf.keras.layers.Layer):
         # Consider additional procssing here.
         return self.flow(feat)
 
+    def get_config(self):
+        config = super().get_config().copy()
+        config.update(self._config)
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+
 
 class UpFlow(tf.keras.layers.Layer):
     """
@@ -497,13 +442,18 @@ class UpFlow(tf.keras.layers.Layer):
     Refine/upsample the input optical flow.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, use_tfa: bool = True, *args, **kwargs):
+        self._config = {
+            'use_tfa': use_tfa
+        }
         data_format = tf.keras.backend.image_data_format()
         self.flow = OptFlow()
         # self.warp = Warp()
         self.warp = WarpV2()
-        # self.cost_volume = CostVolume()
-        self.cost_volume = CostVolumeV2()
+        if use_tfa:
+            self.cost_volume = CostVolumeV2()
+        else:
+            self.cost_volume = CostVolume()
         self.axis = _get_axis(data_format)
         super().__init__(*args, **kwargs)
 
@@ -527,6 +477,15 @@ class UpFlow(tf.keras.layers.Layer):
         # TODO(yycho0108):
         # Consider additional procssing here.
         return self.flow(feat)
+
+    def get_config(self):
+        config = super().get_config().copy()
+        config.update(self._config)
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
 
 
 class DownConv(tf.keras.layers.Layer):

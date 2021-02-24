@@ -49,13 +49,19 @@ def decode_pfm(filename):
 
 def decode_flo(filename):
     data, scale = decode_pfm(filename)
-    return data[..., :2]*scale
+    return data[..., :2] * scale
 
 
 def decode_files(f_prv, f_nxt, f_flo):
     prv = tfio.image.decode_webp(tf.io.read_file(f_prv))
     nxt = tfio.image.decode_webp(tf.io.read_file(f_nxt))
     flo = tf.py_function(decode_flo, [f_flo], Tout=tf.float32)
+
+    # OK, let's see if this looks better
+    # just because we screwed up args to warp()...
+    # This will allow `flo` to be applied to `prv` instead.
+    # ims = tf.concat([nxt[..., :3], prv[..., :3]], axis=-1)
+    # return ims, -flo
     ims = tf.concat([prv[..., :3], nxt[..., :3]], axis=-1)
     return ims, flo
 
@@ -101,7 +107,8 @@ def _count_lines(filename):
         return (sum(bl.count("\n") for bl in _blocks(f)))
 
 
-def get_dataset_from_set(set_file: str = '/home/jamiecho/Repos/Ravel/qpwcnet/data/f3d_set.txt'):
+def get_dataset_from_set(
+        set_file: str = '/home/jamiecho/Repos/Ravel/qpwcnet/data/f3d_set.txt'):
 
     # 1) load text file, preliminary shuffle, then split.
     with open(set_file, 'r') as f:
@@ -112,10 +119,13 @@ def get_dataset_from_set(set_file: str = '/home/jamiecho/Repos/Ravel/qpwcnet/dat
 
     def _decode_files(inputs):
         return decode_files(inputs[0], inputs[1], inputs[2])
-    dataset = (tf.data.Dataset.from_tensor_slices(dataset)
-               .shuffle(n)
-               .map(_decode_files, num_parallel_calls=tf.data.experimental.AUTOTUNE, deterministic=False)
-               )
+    dataset = (
+        tf.data.Dataset.from_tensor_slices(dataset)
+        .shuffle(n)
+        .map(_decode_files,
+             num_parallel_calls=tf.data.experimental.AUTOTUNE,
+             deterministic=False)
+    )
 
     # num_shards = 8
     # shards = np.array_split(dataset, num_shards)
@@ -158,7 +168,8 @@ def test():
         break
 
     # print(list(FC3D_ROOT.glob('frames_finalpass_webp/TRAIN/*/*/left/*.webp'))[0]) # -> 22390
-    # print(len(list(FC3D_ROOT.glob('frames_finalpass_webp/TRAIN/*/*/left/*.webp')))) # -> 22390
+    # print(len(list(FC3D_ROOT.glob('frames_finalpass_webp/TRAIN/*/*/left/*.webp'))))
+    # # -> 22390
 
     # FC3D_ROOT / 'frames_finalpass_webp' / 'TRAIN' / 'A' / '0000' /  'left' /
 

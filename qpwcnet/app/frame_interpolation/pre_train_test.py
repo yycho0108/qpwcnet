@@ -15,14 +15,21 @@ import multiprocessing as mp
 
 from qpwcnet.core.pwcnet import build_interpolator
 from qpwcnet.core.vis import flow_to_image, cost_volume_to_flow
-from qpwcnet.data.youtube_vos import (YoutubeVosTriplet, YoutubeVosSettings,
-                                      YoutubeVosTripletSettings)
+
+from qpwcnet.data.youtube_vos import (
+    YoutubeVosTriplet,
+    YoutubeVosSettings,
+    YoutubeVosTripletSettings)
 from qpwcnet.data.vimeo_triplet import (
-    VimeoTriplet, VimeoTripletSettings)
+    VimeoTriplet,
+    VimeoTripletSettings)
 from qpwcnet.data.triplet_dataset_ops import read_triplet_dataset
+
 from qpwcnet.train.loss import AutoResizeMseLoss
-from qpwcnet.app.arg_setup import with_args
+from qpwcnet.train.util import load_weights
 from qpwcnet.vis.show import show
+
+from qpwcnet.app.arg_setup import with_args
 
 
 @dataclass
@@ -71,55 +78,6 @@ def _show(key, img, data_format: str = None, export: bool = True):
     return show(key, img, True, data_format)
 
 
-def _convert_model(in_file: str, out_file: str):
-    """ tf.**.SavedModel -> weights-only file """
-    import tensorflow as tf
-    import tensorflow_addons as tfa
-    from qpwcnet.train.loss import AutoResizeMseLoss
-
-    tfa.register_all()
-    model = tf.keras.models.load_model(
-        in_file,
-        custom_objects={
-            'AutoResizeMseLoss': AutoResizeMseLoss
-        })
-    model.save_weights(out_file)
-
-
-def load_weights(model: tf.keras.Model, model_file: str):
-    import tempfile
-    import os
-
-    model_file = Path(model_file)
-
-    # If needed, convert to hdf5.
-    # (only hdf5 supports by-name loading)
-    is_hdf5 = model_file.is_file() and (
-        model_file.suffix in ['.hdf5', '.h5'])
-    tmp_name = None
-    if not is_hdf5:
-        fd, tmp_name = tempfile.mkstemp(
-            suffix='.hdf5', dir='/tmp/', text=False)
-        os.close(fd)
-
-        ctx = mp.get_context('spawn')
-        p = ctx.Process(target=_convert_model,
-                        args=(str(model_file), tmp_name))
-        p.start()
-        p.join()
-
-        model_file = Path(tmp_name)
-
-    # NOTE(ycho): model arch may be different from original model,
-    # thus we load the weights by name.
-    # The above conversion to hdf5 is a result of this constraint.
-    model.load_weights(str(model_file), by_name=True)
-
-    # Cleanup temporary file, if created.
-    if (not is_hdf5) and tmp_name:
-        os.remove(tmp_name)
-
-
 @with_args(Settings)
 def main(args: Settings):
     data_format = args.data_format
@@ -127,44 +85,13 @@ def main(args: Settings):
     model_file = Path(args.model)
 
     multi_output = True
-    if False:
-        # Legacy loader
-        if False:
-            # Build + Restoration
-            is_hdf5 = model_file.is_file() and (
-                model_file.suffix in ['.hdf5', '.h5'])
-            if is_hdf5:
-                # NOTE(ycho):
-                # This is the only possibility to set output_multiscale=False.
-                model = build_interpolator(
-                    input_shape=args.input_shape,
-                    output_multiscale=False)
-                multi_output = False
-                model.load_weights(model_file)
-            else:
-                model = build_interpolator(
-                    input_shape=args.input_shape,
-                    output_multiscale=True)
 
-                # NOTE(ycho): because tf2 loading scheme is dumb,
-                # we cannot load by name with .tf format (not HDF5);
-                # this means we need to also set output_multiscale=True.
-                model.load_weights(model_file + '/variables/variables',
-                                   by_name=False)
-        else:
-            # Load directly from tf.SavedModel.
-            tfa.register_all()
-            model = tf.keras.models.load_model(
-                model_file,
-                custom_objects={
-                    'AutoResizeMseLoss': AutoResizeMseLoss,
-                })
-    else:
-        model = build_interpolator(
-            input_shape=args.input_shape,
-            output_multiscale=False)
-        load_weights(model, args.model)
-        multi_output = False
+    # Define inference-only model.
+    model = build_interpolator(
+        input_shape=args.input_shape,
+        output_multiscale=False)
+    load_weights(model, args.model)
+    multi_output = False
 
     logging.info('Done with model load')
 

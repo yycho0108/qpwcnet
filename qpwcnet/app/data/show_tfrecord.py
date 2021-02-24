@@ -51,7 +51,7 @@ def compute_stats(size=1024):
 def main():
     disable_gpu()
 
-    compute_stats()
+    # compute_stats()
 
     if False:
         filename = '/media/ssd/datasets/sintel-processed/sintel.tfrecord'

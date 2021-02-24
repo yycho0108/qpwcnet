@@ -67,7 +67,7 @@ def image_augment_colors(ims):
     contrast_delta = tf.random.uniform([], minval=0.5, maxval=1.5)
 
     # to batch
-    ims = tf.stack([ims[..., :3], ims[..., 3:]], axis=0)
+    ims = einops.rearrange(ims, 'h w (k c) -> h (w k) c', k=2)
 
     # augment
     ims = tf.image.adjust_brightness(ims, brightness_delta)
@@ -76,7 +76,7 @@ def image_augment_colors(ims):
     ims = tf.image.adjust_contrast(ims, contrast_delta)
 
     # to depth
-    ims = tf.concat([ims[0], ims[1]], axis=-1)
+    ims = einops.rearrange(ims, 'h (w k) c -> h w (k c)', k=2)
     return ims
 
 

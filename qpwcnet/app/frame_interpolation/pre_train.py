@@ -30,7 +30,7 @@ class Settings(Serializable):
     root: str = '/tmp/pwc'
     batch_size: int = 8
     num_epoch: int = 600
-    update_freq: int = 16
+    update_freq: int = 256
     data_format: str = 'channels_first'
     allow_memory_growth: bool = False
     debug_nan: bool = False
@@ -38,7 +38,7 @@ class Settings(Serializable):
     input_shape: Tuple[int, int] = (256, 512)
     load_ckpt: str = ''
     dataset: str = 'vimeo'
-    log_level: str = 'info'
+    log_level: str = 'INFO'
 
 
 class TrainModel(tf.keras.Model):
@@ -117,10 +117,10 @@ def preprocess(img0, img1, img2):
     # Deal with data format.
     data_format = tf.keras.backend.image_data_format()
     if data_format == 'channels_first':
-        #img_pair = tf.transpose(img_pair, (0, 3, 1, 2))
-        #img1 = tf.transpose(img1, (0, 3, 1, 2))
+        # img_pair = tf.transpose(img_pair, (0, 3, 1, 2))
+        # img1 = tf.transpose(img1, (0, 3, 1, 2))
         img_pair = einops.rearrange(img_pair, '... h w c -> ... c h w')
-        img1 = einops.rearrange(img_pair, '... h w c -> ... c h w')
+        img1 = einops.rearrange(img1, '... h w c -> ... c h w')
     return (img_pair, img1)
 
 
@@ -132,7 +132,7 @@ class ShowImageCallback(tf.keras.callbacks.Callback):
         self.log_period = log_period
 
         self.batch_index = 0
-        self.writer = tf.summary.create_file_writer(self.log_dir)
+        self.writer = tf.summary.create_file_writer(str(self.log_dir))
         self.imgs = self._get_test_triplet()
         self.inputs = preprocess(*self.imgs)
 
@@ -143,8 +143,9 @@ class ShowImageCallback(tf.keras.callbacks.Callback):
                                        shuffle=True,
                                        augment=False,
                                        prefetch=False,
-                                       batch_size=None)
-        out = next(dataset)
+                                       batch_size=1)
+        for out in dataset:
+            break
         # Explicitly delete dataset,
         # to avoid large memory consumption.
         del dataset
@@ -162,11 +163,16 @@ class ShowImageCallback(tf.keras.callbacks.Callback):
         if data_format == 'channels_first':
             pred_img1 = einops.rearrange(pred_img1, '... c h w -> ... h w c')
 
+        overlay = 0.5 * self.imgs[0] + 0.5 * self.imgs[2]
         with self.writer.as_default():
+            # NOTE(ycho): [None, ...] to add batch dimension:
+            # Apparently image summary needs to be rank 4.
             tf.summary.image('img0', self.imgs[0], step=batch)
             tf.summary.image('img1', self.imgs[1], step=batch)
             tf.summary.image('img2', self.imgs[2], step=batch)
-            tf.summary.image('pred-img1', pred_img1, step=batch)
+            tf.summary.image('overlay', overlay, step=batch)
+            # NOTE(ycho): +0.5 to undo preprocess()
+            tf.summary.image('pred-img1', 0.5 + pred_img1, step=batch)
 
 
 def train(args: Settings, model: tf.keras.Model,
@@ -202,10 +208,12 @@ def train(args: Settings, model: tf.keras.Model,
     except KeyboardInterrupt as e:
         pass
     finally:
-        out_file = str(path['run'] / 'model.pb')
-        logging.info(
-            'saving weights to {} prior to termination ...'.format(out_file))
-        model.save_weights(out_file, save_format='tf')
+        for ext, fmt in zip(['pb', 'h5'], ['tf', 'h5']):
+            out_file = str(path['run'] / 'model.{}'.format(ext))
+            logging.info(
+                'saving weights to {} prior to termination ...'.format(
+                    out_file))
+            model.save_weights(out_file, save_format=fmt)
 
 
 @with_args(Settings)
