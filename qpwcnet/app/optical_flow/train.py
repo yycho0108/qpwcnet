@@ -6,7 +6,7 @@ import tensorflow_addons as tfa
 import numpy as np
 import logging
 
-from qpwcnet.core.pwcnet import build_network
+from qpwcnet.core.pwcnet import build_flower
 from qpwcnet.core.layers import _get_axis
 from qpwcnet.core.agc import adaptive_clip_grad
 from qpwcnet.core.vis import flow_to_image
@@ -537,7 +537,7 @@ def main():
 
     dataset = setup_input(batch_size, data_format)
 
-    model = build_network(train=True, data_format=data_format)
+    model = build_flower(train=True, data_format=data_format)
 
     # Create losses, flow mse
     # NOTE(yycho0108): The final output (result of bilinear interpolation) is

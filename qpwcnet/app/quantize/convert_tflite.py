@@ -7,7 +7,7 @@ import inspect
 from typing import Callable
 from functools import partial
 
-from qpwcnet.core.pwcnet import build_network, build_interpolator
+from qpwcnet.core.pwcnet import build_flower, build_interpolator
 from qpwcnet.core.layers import *
 from qpwcnet.core.mish import Mish, mish  # hmm...
 from qpwcnet.train.util import load_weights
@@ -227,7 +227,7 @@ def main():
     tf.keras.backend.set_image_data_format('channels_last')
 
     if True:
-        model = build_network(
+        model = build_flower(
             train=False, input_shape=(
                 256, 512), use_tfa=False)
         load_weights(model, '/tmp/pwc/run/017/model.h5')

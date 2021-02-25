@@ -6,7 +6,7 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
 
-from qpwcnet.core.pwcnet import build_network, build_interpolator
+from qpwcnet.core.pwcnet import build_flower, build_interpolator
 from qpwcnet.train.loss import FlowMseLoss, AutoResizeMseLoss
 from qpwcnet.core.util import disable_gpu
 
@@ -18,8 +18,8 @@ def main():
 
     # No eager
     tf.compat.v1.disable_eager_execution()
-    # model = build_network(train=True, data_format=data_format)
-    model = build_interpolator(input_shape=(256,512), output_multiscale=True)
+    # model = build_flower(train=True, data_format=data_format)
+    model = build_interpolator(input_shape=(256, 512), output_multiscale=True)
 
     # Add loss terms.
     losses = []

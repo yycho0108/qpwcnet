@@ -5,7 +5,7 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 import numpy as np
 
-from qpwcnet.core.pwcnet import build_network
+from qpwcnet.core.pwcnet import build_flower
 from qpwcnet.data.fchairs3d import get_dataset_from_set
 from qpwcnet.data.tfrecord import get_reader, read_record
 from qpwcnet.data.augment import image_augment, image_resize
@@ -13,7 +13,7 @@ from qpwcnet.data.augment import image_augment, image_resize
 
 def preprocess(ims, flo, data_format='channels_first', base_scale=1.0):
     # 0-255 -> 0.0-1.0
-    ims = tf.cast(ims, tf.float32) * tf.constant(1.0/255.0, dtype=tf.float32)
+    ims = tf.cast(ims, tf.float32) * tf.constant(1.0 / 255.0, dtype=tf.float32)
     # apply augmentation
     ims, flo = image_augment(ims, flo, (256, 512), base_scale)
     # 0.0-1.0 -> -0.5, 0.5

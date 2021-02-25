@@ -207,11 +207,11 @@ def decoder(encs_prv, encs_nxt, use_skip: bool = True,
     return (decs_prv, decs_nxt)
 
 
-def build_network(train=True,
-                  input_shape: Tuple[int, int] = (256, 512),
-                  data_format=None,
-                  use_tfa: bool = True,
-                  ) -> tf.keras.Model:
+def build_flower(train=True,
+                 input_shape: Tuple[int, int] = (256, 512),
+                 data_format=None,
+                 use_tfa: bool = True,
+                 ) -> tf.keras.Model:
     if data_format is None:
         data_format = tf.keras.backend.image_data_format()
     # Input
@@ -274,7 +274,7 @@ def build_interpolator(
     flows_01 = flower_block((encs_nxt[-1], encs_prv[-1], decs_nxt, decs_prv))
 
     # ^^^^ ALL code blocks above must EXACTLY match
-    # build_network() in order for the transfer to work.
+    # build_flower() in order for the transfer to work.
     # this is because we are not very meticulous about
     # bookkeeping layer correspondences.
     flows_10 = flower_block((encs_prv[-1], encs_nxt[-1], decs_prv, decs_nxt))
@@ -288,7 +288,7 @@ def build_interpolator(
 
 
 def main():
-    net = build_network()
+    net = build_flower()
     net.summary()
 
 

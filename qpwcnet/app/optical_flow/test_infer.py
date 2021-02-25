@@ -9,7 +9,7 @@ from simple_parsing import ArgumentParser
 from typing import Tuple
 from functools import partial
 
-from qpwcnet.core.pwcnet import build_network
+from qpwcnet.core.pwcnet import build_flower
 from qpwcnet.core.warp import tf_warp
 from qpwcnet.core.vis import flow_to_image
 from qpwcnet.vis.show import show
@@ -59,9 +59,9 @@ def main(cfg: Settings):
     data_format = tf.keras.backend.image_data_format()
 
     # 1) Build inference-only network
-    model = build_network(False,
-                          cfg.input_shape,
-                          data_format)
+    model = build_flower(False,
+                         cfg.input_shape,
+                         data_format)
 
     # 2) Restore model.
     load_weights(model, cfg.model_file)
