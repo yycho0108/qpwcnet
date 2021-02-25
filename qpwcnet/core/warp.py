@@ -73,6 +73,7 @@ def tf_warp(img, flow, data_format=None):
 
     # Check if batched ...
     if tf.rank(flow) >= 4:
+        print('is_batch')
         is_batch = True
 
     if is_batch:
@@ -80,6 +81,7 @@ def tf_warp(img, flow, data_format=None):
 
     shape = einops.parse_shape(img, pattern)
     W, H = shape['w'], shape['h']
+    print('w={}, h={}'.format(W, H))
 
     # Compute grid coordinates.
     x, y = tf.meshgrid(tf.range(W), tf.range(H))
