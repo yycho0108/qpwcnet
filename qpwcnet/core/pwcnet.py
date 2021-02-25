@@ -12,7 +12,9 @@ from qpwcnet.core.non_layers import (
     Flow,
     UpFlow,
     DownConv,
-    FrameInterpolate)
+    FrameInterpolate,
+    Flower
+)
 
 #from qpwcnet.core.layers import (
 #    Split, Upsample, Downsample, UpConv, Flow, UpFlow, DownConv,
@@ -66,8 +68,10 @@ def flower(enc_prv, enc_nxt, decs_prv, decs_nxt,
 
 
 def interpolator(img_prv, img_nxt,
-                 enc_prv, enc_nxt, decs_prv, decs_nxt,
-                 output_multiscale: bool = True):
+                 decs_prv, decs_nxt,
+                 flos_01, flos_10,
+                 output_multiscale: bool = True,
+                 use_tfa: bool = True):
     """ Frame interpolation stack. """
     data_format = tf.keras.backend.image_data_format()
     axis = _get_axis(data_format)  # feature axis
@@ -94,11 +98,8 @@ def interpolator(img_prv, img_nxt,
     # flo_01 = fwd, i.e. warp(nxt,flo_01)==prv
     # flo_10 = bwd, i.e. warp(prv,flo_10)==nxt
     # flo_10... path is only used(needed) for interpolator.
-    flow = Flow()
-    flo_01 = flow((enc_prv, enc_nxt))
-    flo_10 = flow((enc_nxt, enc_prv))
     img = FrameInterpolate(up=False, name='img_0')((
-        imgs_prv[-1], imgs_nxt[-1], flo_01, flo_10))
+        imgs_prv[-1], imgs_nxt[-1], flos_01[0], flos_10[0]))
     imgs = [img]
 
     # n-2 means skip the last one (for which we explicitly construct flow/img from scratch).
@@ -112,22 +113,12 @@ def interpolator(img_prv, img_nxt,
 
         # Create layers at the current level.
         upsample = Upsample(scale=2.0)
-        upflow = UpFlow()
-
-        # Compute current stage motion block.
-        # previous motion block + network features
-        # NOTE(ycho): Unlike typical upsampling, also mulx2
-        flo_01_u = upsample(flo_01)
-        flo_10_u = upsample(flo_10)
-
-        flo_01 = upflow((dec_prv, dec_nxt, flo_01_u))
-        flo_10 = upflow((dec_nxt, dec_prv, flo_10_u))
 
         # Upsampled previous image + motion block +
         # downsampled input images
         img_u = Upsample(scale=1.0)(img)
         img = FrameInterpolate(up=True, name='img_{}'.format(i + 1))((
-            dec_prv, dec_nxt, flo_01, flo_10, img_u))
+            dec_prv, dec_nxt, flos_01[i + 1], flos_10[i + 1], img_u))
         imgs.append(img)
 
     # Final full-res img is ONLY upsampled.
@@ -276,9 +267,23 @@ def build_interpolator(
 
     encs_prv, encs_nxt = encoder(img_prv, img_nxt, True)
     decs_prv, decs_nxt = decoder(encs_prv, encs_nxt, True)
-    outputs = interpolator(img_prv, img_nxt,
-                           encs_prv[-1], encs_nxt[-1],
-                           decs_prv, decs_nxt, *args, **kwargs)
+    flower_block = Flower(
+        len(decs_prv),
+        output_multiscale=True,
+        use_tfa=use_tfa)
+    flows_01 = flower_block((encs_nxt[-1], encs_prv[-1], decs_nxt, decs_prv))
+
+    # ^^^^ ALL code blocks above must EXACTLY match
+    # build_network() in order for the transfer to work.
+    # this is because we are not very meticulous about
+    # bookkeeping layer correspondences.
+    flows_10 = flower_block((encs_prv[-1], encs_nxt[-1], decs_prv, decs_nxt))
+
+    outputs = interpolator(
+        img_prv, img_nxt,
+        decs_prv, decs_nxt,
+        flows_01, flows_10,
+        use_tfa=use_tfa, *args, **kwargs)
     return tf.keras.Model(inputs=inputs, outputs=outputs, name='qpwc_net')
 
 

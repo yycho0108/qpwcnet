@@ -7,7 +7,7 @@ import inspect
 from typing import Callable
 from functools import partial
 
-from qpwcnet.core.pwcnet import build_network
+from qpwcnet.core.pwcnet import build_network, build_interpolator
 from qpwcnet.core.layers import *
 from qpwcnet.core.mish import Mish, mish  # hmm...
 from qpwcnet.train.util import load_weights
@@ -66,7 +66,9 @@ def quantize_annotate_layer(layer):
         return layer
 
     # no-idea-what-to-do layers
-    if isinstance(layer, (tfa.layers.optical_flow.CorrelationCost, tf.keras.layers.Lambda)):
+    if isinstance(
+            layer,
+            (tfa.layers.optical_flow.CorrelationCost, tf.keras.layers.Lambda)):
         # Actually, I think this should just be replaced by an
         # equivalent (non-custom) op.
         return layer
@@ -76,7 +78,6 @@ def quantize_annotate_layer(layer):
         # Actually, I think this should just be replaced by an
         # equivalent (non-custom) op.
         return layer
-
 
     return tfmot.quantization.keras.quantize_annotate_layer(layer)
 
@@ -225,8 +226,26 @@ def main():
     # `channels_last`. Loading weights, etc., should still work.
     tf.keras.backend.set_image_data_format('channels_last')
 
-    model = build_network(train=True, use_tfa=False)
-    # load_weights(model, '/tmp/pwc/run/119/model.h5')
+    if True:
+        model = build_network(
+            train=False, input_shape=(
+                256, 512), use_tfa=False)
+        load_weights(model, '/tmp/pwc/run/017/model.h5')
+        print('output = {}'.format(model.output.shape))
+    else:
+        model = build_interpolator(
+            input_shape=(256, 512),
+            data_format=tf.keras.backend.image_data_format(),
+            use_tfa=False
+        )
+        load_weights(model, '/tmp/pwc/run/007/model.h5')
+
+        # NOTE(ycho): Extract the flow01 component of interpolator model.
+        model = tf.keras.Model(
+            inputs=model.inputs,
+            outputs=model.get_layer('lambda_11').get_output_at(0)
+        )
+
     # model.summary()
 
     # Single forward pass.

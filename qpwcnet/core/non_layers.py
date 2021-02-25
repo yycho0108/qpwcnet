@@ -69,7 +69,6 @@ class CostVolume:
 
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, inputs):
         prv, nxt = inputs
 
@@ -117,7 +116,6 @@ class CostVolumeV2:
             1, search_range, 1, 1, search_range, data_format)
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, inputs):
         prv, nxt = inputs
         cost_vol = self.corr([prv, nxt])
@@ -131,7 +129,6 @@ class Warp:
         self.data_format = data_format
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, inputs):
         img, flo = inputs
         return tf_warp(img, flo, self.data_format)
@@ -147,7 +144,6 @@ class WarpV2:
             lambda a: tfa.image.dense_image_warp(a[0], a[1]))
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, inputs):
         img, flo = inputs
         if self.data_format == 'channels_first':
@@ -168,7 +164,6 @@ class Split:
         self.axis = axis
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, x):
         return tf.split(x, self.num, self.axis)
 
@@ -181,7 +176,6 @@ class Downsample:
             pool_size=(2, 2), padding='same')
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, x):
         return self.downsample(x)
 
@@ -195,7 +189,6 @@ class Upsample:
         super().__init__()
         # super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, x):
         return tf.constant(self.scale, dtype=tf.float32) * self.upsample(x)
 
@@ -212,7 +205,6 @@ class UpConv:
             data_format=data_format)
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, x):
         return self.conv_up(x)
         # return self.norm(self.conv_up(x), training=training)
@@ -262,7 +254,6 @@ class OptFlow:
         )
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, inputs):
         shape = parse_image_shape(inputs)
 
@@ -277,7 +268,8 @@ class OptFlow:
         x = inputs
         for conv in self.feat:
             x = conv(x)
-        x = scale * self.flow(self.norm(self.conv(x)))
+        f = self.flow(self.norm(self.conv(x)))
+        x = scale * f
         return x
 
 
@@ -301,7 +293,6 @@ class FrameInterpolate:
         super().__init__()
         # super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, inputs):
         if self.up:
             prv, nxt, flo_01, flo_10, img_u = inputs
@@ -338,7 +329,6 @@ class Flow:
 
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, inputs):
         prv, nxt = inputs
         cost = self.cost_volume((prv, nxt))
@@ -370,9 +360,9 @@ class UpFlow:
         else:
             self.cost_volume = CostVolume()
         self.axis = _get_axis(data_format)
+        self.rename = tf.keras.layers.Lambda(lambda x: x)
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, inputs):
         # prv, nxt, flo):
         prv, nxt, flo = inputs
@@ -392,7 +382,9 @@ class UpFlow:
         feat = tf.concat(feat, axis=self.axis)
         # TODO(yycho0108):
         # Consider additional procssing here.
-        return self.flow(feat)
+        out = self.flow(feat)
+        out = self.rename(out)
+        return out
 
 
 class DownConv:
@@ -444,7 +436,6 @@ class DownConv:
 
         super().__init__(*args, **kwargs)
 
-    # @tf.function
     def __call__(self, inputs, training=None):
         x = inputs
         if self.use_normalizer:
@@ -456,3 +447,53 @@ class DownConv:
             x = (self.conv_aa(x))
             x = (self.conv_b(x))
         return x
+
+
+class Flower:
+    def __init__(self,
+                 num_layers: int,
+                 output_multiscale: bool = True,
+                 use_tfa: bool = True,
+                 ):
+        self.num_layers = num_layers
+        self.output_multiscale = output_multiscale
+        self.use_tfa = use_tfa
+
+        self.flow = Flow(use_tfa=use_tfa)
+        self.upsamples = []
+        self.upflows = []
+        for i in range(num_layers):
+            self.upsamples.append(Upsample(scale=2.0))
+            self.upflows.append(UpFlow(use_tfa=use_tfa))
+        self.upsamples.append(Upsample(sacle=2.0))
+
+    def __call__(self, inputs, output_multiscale: bool = True,
+                 use_tfa: bool = True):
+        """ Frame interpolation stack. """
+        (enc_prv, enc_nxt, decs_prv, decs_nxt) = inputs
+
+        # flo_01 = fwd, i.e. warp(nxt,flo_01)==prv
+        flo_01 = self.flow((enc_prv, enc_nxt))
+        flos = [flo_01]
+
+        for i in range(self.num_layers):
+            # Get inputs at current layer ...
+            dec_prv = decs_prv[i]
+            dec_nxt = decs_nxt[i]
+
+            # Compute current stage motion block.
+            # previous motion block + network features
+            # NOTE(ycho): Unlike typical upsampling, also mulx2
+            flo_01_u = self.upsamples[i](flo_01)
+            flo_01 = self.upflows[i]((dec_prv, dec_nxt, flo_01_u))
+            flos.append(flo_01)
+
+        # Final full-res flow is ONLY upsampled.
+        flo_01 = self.upsamples[-1](flo_01)
+        flos.append(flo_01)
+
+        if self.output_multiscale:
+            outputs = flos
+        else:
+            outputs = [flo_01]
+        return outputs

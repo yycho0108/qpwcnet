@@ -356,7 +356,10 @@ def train_keras(model, losses, dataset, path, config):
     # Restore from previous checkpoint.
     if True:
         # model.load_weights('/tmp/pwc/run/075/model.h5', by_name=True)
-        model.load_weights('/tmp/pwc/run/119/model.h5', by_name=True)
+        # model.load_weights('/tmp/pwc/run/119/model.h5', by_name=True)
+        print('<load>')
+        model.load_weights('/tmp/pwc/run/015/model.h5', by_name=True)
+        print('</load>')
 
         #latest_ckpt = tf.train.latest_checkpoint('/tmp/pwc/run/003/ckpt/')
         #tf.train.Checkpoint(optimizer=optimizer,
@@ -368,7 +371,7 @@ def train_keras(model, losses, dataset, path, config):
         optimizer=optimizer,
         loss=losses,
         # FIXME(yycho0108): This is super ugly, but probably works for now.
-        metrics={'upsample_4': epe_error(data_format)}
+        # metrics={'upsample_4': epe_error(data_format)}
     )
 
     try:

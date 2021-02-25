@@ -15,6 +15,7 @@ import multiprocessing as mp
 
 from qpwcnet.core.pwcnet import build_interpolator
 from qpwcnet.core.vis import flow_to_image, cost_volume_to_flow
+from qpwcnet.core.warp import tf_warp
 
 from qpwcnet.data.youtube_vos import (
     YoutubeVosTriplet,
@@ -29,7 +30,7 @@ from qpwcnet.train.loss import AutoResizeMseLoss
 from qpwcnet.train.util import load_weights
 from qpwcnet.vis.show import show
 
-from qpwcnet.app.arg_setup import with_args
+from qpwcnet.app.util.arg_setup import with_args
 
 
 @dataclass
@@ -96,9 +97,12 @@ def main(args: Settings):
     logging.info('Done with model load')
 
     # Extract flow-only model for visualization.
+    # NOTE(ycho): We're only extracting forward-directional flow,
+    # i.e. flow : prv[i, j] == nxt[i+flo[i,j,1], j+flo[i,j,0]]
     flow_model = tf.keras.Model(
         inputs=model.inputs,
-        outputs=model.get_layer('up_flow_3').output
+        outputs=model.get_layer('lambda_11').get_output_at(0)
+        # print(model.get_layer('lambda_11').get_output_at(1))
     )
 
     # FIXME(ycho): Ability to select dataset
@@ -123,9 +127,25 @@ def main(args: Settings):
         img_pair -= 0.5
 
         if True:
-            flow = flow_model(img_pair)[0]
+            flow = flow_model(img_pair)
             flow_rgb = flow_to_image(flow, data_format=data_format)
-            _show('5-flow', flow_rgb, data_format)
+            _show('5-flow', flow_rgb[0], data_format)
+
+            # warp 1 -> 0, let's see how it fares.
+            if data_format == 'channels_first':
+                upflow = 2.0 * einops.repeat(flow,
+                                             'n c h w -> n c (h h2) (w w2)',
+                                             h2=2, w2=2)
+            else:
+                upflow = 2.0 * einops.repeat(flow,
+                                             'n h w c -> n (h h2) (w w2) c',
+                                             h2=2, w2=2)
+            if data_format == 'channels_first':
+                img1_ = einops.rearrange(img1, 'n h w c -> n c h w')
+            else:
+                img1_ = img1
+            img1w = tf_warp(img1_, upflow, data_format)
+            _show('6-warp(==0-prv)', img1w[0], data_format)
 
         if True:
             pred_img1 = model(img_pair)

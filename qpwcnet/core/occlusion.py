@@ -3,6 +3,8 @@
 import tensorflow as tf
 import einops
 
+from qpwcnet.core.warp import tf_warp
+
 
 def get_spatial_shape(x: tf.Tensor, data_format: str = None):
     # 3D pattern
@@ -77,8 +79,9 @@ def estimate_occlusion_map(flow: tf.Tensor,
 
     # NOTE(ycho): naive inverse flow.
     # works-ish. The assumption here : larger flow = closer flow
-    flow2 = -tf.tensor_scatter_nd_max(tf.zeros_like(flow), idx2_wb, flow)
-    dj, di = tf.unstack(flow2, axis=axis)
+    # flow2 = -tf.tensor_scatter_nd_max(tf.zeros_like(flow), idx2_wb, flow)
+    inv_flow = -tf_warp(flow, flow, data_format)
+    dj, di = tf.unstack(inv_flow, axis=axis)
     i2, j2 = i + di, j + dj
     idx3 = tf.cast(tf.stack([i2, j2], axis=-1), tf.int32)
     idx3 = tf.clip_by_value(
